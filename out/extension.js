@@ -1,5 +1,5 @@
 "use strict";
-// Extensao VS Code - Lista portas em uso e abre no navegador (com fallback para Angular CLI)
+// Extensao VS Code - Visual moderno: lista portas com estilo e botão
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
     var desc = Object.getOwnPropertyDescriptor(m, k);
@@ -55,7 +55,7 @@ class LocalhostPortsProvider {
     refresh() {
         this.getListeningPorts().then((ports) => {
             this.ports = ports;
-            vscode.window.showInformationMessage(`Detectadas ${ports.length} porta(s): ${ports.join(', ')}`);
+            vscode.window.showInformationMessage(`Detectadas ${ports.length} porta(s): ${ports.map(p => p.port).join(', ')}`);
             this._onDidChangeTreeData.fire(null);
         });
     }
@@ -63,7 +63,7 @@ class LocalhostPortsProvider {
         return element;
     }
     getChildren() {
-        return Promise.resolve(this.ports.map(port => new PortItem(port)));
+        return Promise.resolve(this.ports.map(p => new PortItem(p)));
     }
     getListeningPorts() {
         return new Promise((resolve) => {
@@ -84,37 +84,40 @@ class LocalhostPortsProvider {
                     vscode.window.showErrorMessage(`Erro ao executar comando: ${err}`);
                     return resolve([]);
                 }
-                const ports = new Set();
+                const map = new Map();
                 stdout.split('\n').forEach(line => {
                     const portMatch = line.match(/:(\d+)/);
+                    const commandMatch = line.trim().split(/\s+/)[0];
                     if (portMatch && portMatch[1]) {
                         const port = portMatch[1];
                         if (!isNaN(Number(port)) && Number(port) >= 80 && Number(port) <= 65535) {
-                            ports.add(port);
+                            const label = commandMatch || 'desconhecida';
+                            map.set(port, label);
                         }
                     }
-                    // Fallback: detectar explicitamente porta 4200 (Angular CLI comum)
                     if (line.includes('4200')) {
-                        ports.add('4200');
+                        map.set('4200', 'node');
                     }
                 });
-                resolve(Array.from(ports));
+                const result = Array.from(map.entries()).map(([port, proc]) => ({ port, process: proc }));
+                resolve(result);
             });
         });
     }
 }
 class PortItem extends vscode.TreeItem {
-    port;
-    constructor(port) {
-        super(`localhost:${port}`, vscode.TreeItemCollapsibleState.None);
-        this.port = port;
+    info;
+    constructor(info) {
+        super(`${info.port}`, vscode.TreeItemCollapsibleState.None);
+        this.info = info;
         this.command = {
             command: 'localhostPorts.open',
             title: 'Abrir no navegador',
-            arguments: [port]
+            arguments: [info.port]
         };
-        this.tooltip = `Abrir http://localhost:${port}`;
-        this.description = `Clique para abrir`;
+        this.tooltip = `http://localhost:${info.port}`;
+        this.description = `${info.process}`;
+        this.iconPath = new vscode.ThemeIcon('radio-tower', new vscode.ThemeColor('gitDecoration.modifiedResourceForeground'));
     }
 }
 function deactivate() { }
