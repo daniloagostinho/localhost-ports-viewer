@@ -1,4 +1,4 @@
-// Extensao VS Code - Visual moderno: lista portas com estilo e botão
+// Extensao VS Code - Visual premium com separação de info e botão de ação
 
 import { exec } from 'child_process';
 import * as os from 'os';
@@ -85,16 +85,21 @@ class LocalhostPortsProvider implements vscode.TreeDataProvider<PortItem> {
 class PortItem extends vscode.TreeItem {
   constructor(public readonly info: PortInfo) {
     super(`${info.port}`, vscode.TreeItemCollapsibleState.None);
+
+    this.label = `${info.port}`;
+    this.description = info.process.toUpperCase();
+    this.tooltip = `Abrir no navegador: http://localhost:${info.port}`;
+
     this.command = {
       command: 'localhostPorts.open',
       title: 'Abrir no navegador',
       arguments: [info.port]
     };
-    this.tooltip = `http://localhost:${info.port}`;
-    this.description = `${info.process}`;
-    this.iconPath = new vscode.ThemeIcon('radio-tower', new vscode.ThemeColor('gitDecoration.modifiedResourceForeground'));
+
+    this.iconPath = new vscode.ThemeIcon('globe', new vscode.ThemeColor('charts.blue'));
   }
 }
+
 
 interface PortInfo {
   port: string;

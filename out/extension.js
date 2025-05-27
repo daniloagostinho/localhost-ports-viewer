@@ -1,5 +1,5 @@
 "use strict";
-// Extensao VS Code - Visual moderno: lista portas com estilo e botão
+// Extensao VS Code - Visual premium com separação de info e botão de ação
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
     var desc = Object.getOwnPropertyDescriptor(m, k);
@@ -110,14 +110,15 @@ class PortItem extends vscode.TreeItem {
     constructor(info) {
         super(`${info.port}`, vscode.TreeItemCollapsibleState.None);
         this.info = info;
+        this.label = `${info.port}`;
+        this.description = info.process.toUpperCase();
+        this.tooltip = `Abrir no navegador: http://localhost:${info.port}`;
         this.command = {
             command: 'localhostPorts.open',
             title: 'Abrir no navegador',
             arguments: [info.port]
         };
-        this.tooltip = `http://localhost:${info.port}`;
-        this.description = `${info.process}`;
-        this.iconPath = new vscode.ThemeIcon('radio-tower', new vscode.ThemeColor('gitDecoration.modifiedResourceForeground'));
+        this.iconPath = new vscode.ThemeIcon('globe', new vscode.ThemeColor('charts.blue'));
     }
 }
 function deactivate() { }
