@@ -1,0 +1,96 @@
+// Extensao VS Code - Lista portas em uso e abre no navegador (com fallback para Angular CLI)
+
+import { exec } from 'child_process';
+import * as os from 'os';
+import * as vscode from 'vscode';
+
+export function activate(context: vscode.ExtensionContext) {
+  const provider = new LocalhostPortsProvider();
+  vscode.window.registerTreeDataProvider('localhostPorts', provider);
+  vscode.commands.registerCommand('localhostPorts.refresh', () => provider.refresh());
+  vscode.commands.registerCommand('localhostPorts.open', (port: string) => {
+    vscode.env.openExternal(vscode.Uri.parse(`http://localhost:${port}`));
+  });
+
+  provider.refresh();
+}
+
+class LocalhostPortsProvider implements vscode.TreeDataProvider<PortItem> {
+  private _onDidChangeTreeData: vscode.EventEmitter<PortItem | undefined | null> = new vscode.EventEmitter<PortItem | undefined | null>();
+  readonly onDidChangeTreeData: vscode.Event<PortItem | undefined | null> = this._onDidChangeTreeData.event;
+
+  private ports: string[] = [];
+
+  refresh(): void {
+    this.getListeningPorts().then((ports) => {
+      this.ports = ports;
+      vscode.window.showInformationMessage(`Detectadas ${ports.length} porta(s): ${ports.join(', ')}`);
+      this._onDidChangeTreeData.fire(null);
+    });
+  }
+
+  getTreeItem(element: PortItem): vscode.TreeItem {
+    return element;
+  }
+
+  getChildren(): Thenable<PortItem[]> {
+    return Promise.resolve(this.ports.map(port => new PortItem(port)));
+  }
+
+  private getListeningPorts(): Promise<string[]> {
+    return new Promise((resolve) => {
+      const platform = os.platform();
+      let command = '';
+
+      if (platform === 'darwin' || platform === 'linux') {
+        command = 'lsof -iTCP -sTCP:LISTEN -P -n';
+      } else if (platform === 'win32') {
+        command = 'netstat -ano';
+      } else {
+        vscode.window.showErrorMessage(`Sistema operacional não suportado: ${platform}`);
+        return resolve([]);
+      }
+
+      exec(command, (err, stdout) => {
+        if (err || !stdout) {
+          vscode.window.showErrorMessage(`Erro ao executar comando: ${err}`);
+          return resolve([]);
+        }
+
+        const ports = new Set<string>();
+
+        stdout.split('\n').forEach(line => {
+          const portMatch = line.match(/:(\d+)/);
+          if (portMatch && portMatch[1]) {
+            const port = portMatch[1];
+            if (!isNaN(Number(port)) && Number(port) >= 80 && Number(port) <= 65535) {
+              ports.add(port);
+            }
+          }
+
+          // Fallback: detectar explicitamente porta 4200 (Angular CLI comum)
+          if (line.includes('4200')) {
+            ports.add('4200');
+          }
+        });
+
+        resolve(Array.from(ports));
+      });
+    });
+  }
+}
+
+class PortItem extends vscode.TreeItem {
+  constructor(public readonly port: string) {
+    super(`localhost:${port}`, vscode.TreeItemCollapsibleState.None);
+    this.command = {
+      command: 'localhostPorts.open',
+      title: 'Abrir no navegador',
+      arguments: [port]
+    };
+    this.tooltip = `Abrir http://localhost:${port}`;
+    this.description = `Clique para abrir`;
+  }
+}
+
+export function deactivate() {}
