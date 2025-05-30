@@ -12,38 +12,76 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 class LocalhostPortsWebviewProvider implements vscode.WebviewViewProvider {
-  async resolveWebviewView(webviewView: vscode.WebviewView) {
-    const ports = await getListeningPorts();
+  private _view?: vscode.WebviewView;
+  private _refreshInterval?: NodeJS.Timeout;
 
+  async resolveWebviewView(webviewView: vscode.WebviewView) {
+    this._view = webviewView;
+    
     webviewView.webview.options = {
       enableScripts: true
     };
 
-    webviewView.webview.html = getWebviewContent(ports);
+    // Iniciar refresh automático
+    this.startAutoRefresh();
+
+    // Atualizar conteúdo inicial
+    await this.updateContent();
+
+    webviewView.onDidDispose(() => {
+      this.stopAutoRefresh();
+    });
 
     webviewView.webview.onDidReceiveMessage(msg => {
-      if (msg.command === 'open') {
-        vscode.env.openExternal(vscode.Uri.parse(`http://localhost:${msg.port}`));
+      switch (msg.command) {
+        case 'open':
+          vscode.env.openExternal(vscode.Uri.parse(`http://localhost:${msg.port}`));
+          break;
+        case 'refresh':
+          this.updateContent();
+          break;
       }
     });
+  }
+
+  private startAutoRefresh() {
+    this.stopAutoRefresh();
+    this._refreshInterval = setInterval(() => {
+      this.updateContent();
+    }, 5000);
+  }
+
+  private stopAutoRefresh() {
+    if (this._refreshInterval) {
+      clearInterval(this._refreshInterval);
+      this._refreshInterval = undefined;
+    }
+  }
+
+  private async updateContent() {
+    if (this._view) {
+      const ports = await getListeningPorts();
+      this._view.webview.html = getWebviewContent(ports);
+    }
   }
 }
 
 async function getListeningPorts(): Promise<PortInfo[]> {
-  const knownPorts = [80, 3000, 3001, 4000, 4200, 5000, 5432, 6000, 7000, 8080, 9000];
+  const knownPorts = [
+    80, 443, // HTTP/HTTPS
+    3000, 3001, 3002, 3003, // React, Express, etc
+    4000, 4001, 4200, 4300, // Angular, Ember, etc
+    5000, 5001, 5002, 5432, // .NET, Python, PostgreSQL
+    6000, 6001, 6379, // Redis
+    7000, 7001, // Various services
+    8000, 8001, 8080, 8081, 8082, // Dev servers
+    9000, 9001, 9090, // Various services
+    27017 // MongoDB
+  ];
   const result: PortInfo[] = [];
   const processes = await psList();
 
-  const fallbackNames: Record<string, string> = {
-    '4200': 'Angular',
-    '5432': 'Postgres',
-    '5000': 'Node/Express',
-    '7000': 'ControlCe',
-    '8080': 'http-server'
-  };
-
   for (const port of knownPorts) {
-    // Verifica IPv4 e IPv6
     const [v4, v6] = await Promise.all([
       tcpPortUsed.check(port, '127.0.0.1'),
       tcpPortUsed.check(port, '::1')
@@ -51,9 +89,7 @@ async function getListeningPorts(): Promise<PortInfo[]> {
     const inUse = v4 || v6;
 
     if (inUse) {
-      const match = processes.find(p => p.cmd?.includes(port.toString()));
-      const processName = match?.name || fallbackNames[port.toString()] || 'Unknown';
-      result.push({ port: port.toString(), process: processName });
+      result.push({ port: port.toString(), process: 'PORT IN USE' });
     }
   }
 
@@ -64,7 +100,6 @@ function getWebviewContent(ports: PortInfo[]): string {
   const rows = ports.map(p => `
     <div class="row">
       <div class="port">${p.port}</div>
-      <div class="label">${p.process.toUpperCase()}</div>
       <button onclick="openPort('${p.port}')">→</button>
     </div>
   `).join('\n');
@@ -80,10 +115,36 @@ function getWebviewContent(ports: PortInfo[]): string {
           font-family: sans-serif;
           padding: 16px;
         }
+        .header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+        .refresh-btn {
+          background-color: #2d2d2d;
+          color: #ccc;
+          border: 1px solid #3d3d3d;
+          border-radius: 4px;
+          padding: 4px 8px;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          font-size: 12px;
+        }
+        .refresh-btn:hover {
+          background-color: #3d3d3d;
+          color: white;
+        }
+        .refresh-icon {
+          font-size: 14px;
+        }
         .row {
           display: flex;
           align-items: center;
-          margin-bottom: 12px;
+          margin-bottom: 5px;
+          gap: 8px;
+          width: fit-content;
         }
         .port {
           background-color: #00c853;
@@ -95,17 +156,13 @@ function getWebviewContent(ports: PortInfo[]): string {
           min-width: 60px;
           text-align: center;
         }
-        .label {
-          margin-left: 12px;
-          font-size: 14px;
-          flex-grow: 1;
-        }
         button {
           background: none;
           border: none;
           color: #ccc;
           font-size: 18px;
           cursor: pointer;
+          padding: 6px;
         }
         button:hover {
           color: white;
@@ -113,12 +170,23 @@ function getWebviewContent(ports: PortInfo[]): string {
       </style>
     </head>
     <body>
-      <h3>LOCALHOST: LOCALHOST PORTS</h3>
+      <div class="header">
+        <h3>ACTIVE PORTS</h3>
+        <button class="refresh-btn" onclick="refreshPorts()">
+          <span class="refresh-icon">↻</span>
+          Synchronize
+        </button>
+      </div>
       ${rows}
       <script>
         const vscode = acquireVsCodeApi();
+        
         function openPort(port) {
           vscode.postMessage({ command: 'open', port });
+        }
+
+        function refreshPorts() {
+          vscode.postMessage({ command: 'refresh' });
         }
       </script>
     </body>
@@ -131,4 +199,6 @@ interface PortInfo {
   process: string;
 }
 
-export function deactivate() {}
+export function deactivate() {
+  // Cleanup
+}

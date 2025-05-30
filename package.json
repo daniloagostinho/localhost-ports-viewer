@@ -4,7 +4,7 @@
   "publisher": "danilodevsilva",
   "description": "View and open services running on localhost directly from VS Code.",
   "type": "module",
-  "version": "0.0.6",
+  "version": "0.0.9",
   "engines": {
     "vscode": "^1.100.0"
   },
@@ -30,7 +30,7 @@
       "localhostPortsContainer": [
         {
           "id": "localhostPorts",
-          "name": "Localhost Ports",
+          "name": "",
           "icon": "icon.png",
           "type": "webview"
         }

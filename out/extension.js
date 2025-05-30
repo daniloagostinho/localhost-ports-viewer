@@ -1,125 +1,179 @@
-"use strict";
-// Extensao VS Code - Visual premium com separação de info e botão de ação
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.activate = activate;
-exports.deactivate = deactivate;
-const child_process_1 = require("child_process");
-const os = __importStar(require("os"));
-const vscode = __importStar(require("vscode"));
-function activate(context) {
-    const provider = new LocalhostPortsProvider();
-    vscode.window.registerTreeDataProvider('localhostPorts', provider);
-    vscode.commands.registerCommand('localhostPorts.refresh', () => provider.refresh());
-    vscode.commands.registerCommand('localhostPorts.open', (port) => {
-        vscode.env.openExternal(vscode.Uri.parse(`http://localhost:${port}`));
-    });
-    provider.refresh();
+// Extensão VS Code com WebviewViewProvider no painel lateral (visual premium)
+import psList from 'ps-list';
+import tcpPortUsed from 'tcp-port-used';
+import * as vscode from 'vscode';
+export function activate(context) {
+    const provider = new LocalhostPortsWebviewProvider();
+    context.subscriptions.push(vscode.window.registerWebviewViewProvider('localhostPorts', provider));
 }
-class LocalhostPortsProvider {
-    _onDidChangeTreeData = new vscode.EventEmitter();
-    onDidChangeTreeData = this._onDidChangeTreeData.event;
-    ports = [];
-    refresh() {
-        this.getListeningPorts().then((ports) => {
-            this.ports = ports;
-            vscode.window.showInformationMessage(`Detectadas ${ports.length} porta(s): ${ports.map(p => p.port).join(', ')}`);
-            this._onDidChangeTreeData.fire(null);
+class LocalhostPortsWebviewProvider {
+    _view;
+    _refreshInterval;
+    async resolveWebviewView(webviewView) {
+        this._view = webviewView;
+        webviewView.webview.options = {
+            enableScripts: true
+        };
+        // Iniciar refresh automático
+        this.startAutoRefresh();
+        // Atualizar conteúdo inicial
+        await this.updateContent();
+        webviewView.onDidDispose(() => {
+            this.stopAutoRefresh();
+        });
+        webviewView.webview.onDidReceiveMessage(msg => {
+            switch (msg.command) {
+                case 'open':
+                    vscode.env.openExternal(vscode.Uri.parse(`http://localhost:${msg.port}`));
+                    break;
+                case 'refresh':
+                    this.updateContent();
+                    break;
+            }
         });
     }
-    getTreeItem(element) {
-        return element;
+    startAutoRefresh() {
+        this.stopAutoRefresh();
+        this._refreshInterval = setInterval(() => {
+            this.updateContent();
+        }, 5000);
     }
-    getChildren() {
-        return Promise.resolve(this.ports.map(p => new PortItem(p)));
+    stopAutoRefresh() {
+        if (this._refreshInterval) {
+            clearInterval(this._refreshInterval);
+            this._refreshInterval = undefined;
+        }
     }
-    getListeningPorts() {
-        return new Promise((resolve) => {
-            const platform = os.platform();
-            let command = '';
-            if (platform === 'darwin' || platform === 'linux') {
-                command = 'lsof -iTCP -sTCP:LISTEN -P -n';
-            }
-            else if (platform === 'win32') {
-                command = 'netstat -ano';
-            }
-            else {
-                vscode.window.showErrorMessage(`Sistema operacional não suportado: ${platform}`);
-                return resolve([]);
-            }
-            (0, child_process_1.exec)(command, (err, stdout) => {
-                if (err || !stdout) {
-                    vscode.window.showErrorMessage(`Erro ao executar comando: ${err}`);
-                    return resolve([]);
-                }
-                const map = new Map();
-                stdout.split('\n').forEach(line => {
-                    const portMatch = line.match(/:(\d+)/);
-                    const commandMatch = line.trim().split(/\s+/)[0];
-                    if (portMatch && portMatch[1]) {
-                        const port = portMatch[1];
-                        if (!isNaN(Number(port)) && Number(port) >= 80 && Number(port) <= 65535) {
-                            const label = commandMatch || 'desconhecida';
-                            map.set(port, label);
-                        }
-                    }
-                    if (line.includes('4200')) {
-                        map.set('4200', 'node');
-                    }
-                });
-                const result = Array.from(map.entries()).map(([port, proc]) => ({ port, process: proc }));
-                resolve(result);
-            });
-        });
+    async updateContent() {
+        if (this._view) {
+            const ports = await getListeningPorts();
+            this._view.webview.html = getWebviewContent(ports);
+        }
     }
 }
-class PortItem extends vscode.TreeItem {
-    info;
-    constructor(info) {
-        super(`${info.port}`, vscode.TreeItemCollapsibleState.None);
-        this.info = info;
-        this.label = `${info.port}`;
-        this.description = info.process.toUpperCase();
-        this.tooltip = `Abrir no navegador: http://localhost:${info.port}`;
-        this.command = {
-            command: 'localhostPorts.open',
-            title: 'Abrir no navegador',
-            arguments: [info.port]
-        };
-        this.iconPath = new vscode.ThemeIcon('globe', new vscode.ThemeColor('charts.blue'));
+async function getListeningPorts() {
+    const knownPorts = [
+        80, 443, // HTTP/HTTPS
+        3000, 3001, 3002, 3003, // React, Express, etc
+        4000, 4001, 4200, 4300, // Angular, Ember, etc
+        5000, 5001, 5002, 5432, // .NET, Python, PostgreSQL
+        6000, 6001, 6379, // Redis
+        7000, 7001, // Various services
+        8000, 8001, 8080, 8081, 8082, // Dev servers
+        9000, 9001, 9090, // Various services
+        27017 // MongoDB
+    ];
+    const result = [];
+    const processes = await psList();
+    for (const port of knownPorts) {
+        const [v4, v6] = await Promise.all([
+            tcpPortUsed.check(port, '127.0.0.1'),
+            tcpPortUsed.check(port, '::1')
+        ]);
+        const inUse = v4 || v6;
+        if (inUse) {
+            result.push({ port: port.toString(), process: 'PORT IN USE' });
+        }
     }
+    return result;
 }
-function deactivate() { }
+function getWebviewContent(ports) {
+    const rows = ports.map(p => `
+    <div class="row">
+      <div class="port">${p.port}</div>
+      <button onclick="openPort('${p.port}')">→</button>
+    </div>
+  `).join('\n');
+    return `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <style>
+        body {
+          background-color: #1e1e1e;
+          color: #ccc;
+          font-family: sans-serif;
+          padding: 16px;
+        }
+        .header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+        .refresh-btn {
+          background-color: #2d2d2d;
+          color: #ccc;
+          border: 1px solid #3d3d3d;
+          border-radius: 4px;
+          padding: 4px 8px;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          font-size: 12px;
+        }
+        .refresh-btn:hover {
+          background-color: #3d3d3d;
+          color: white;
+        }
+        .refresh-icon {
+          font-size: 14px;
+        }
+        .row {
+          display: flex;
+          align-items: center;
+          margin-bottom: 5px;
+          gap: 8px;
+          width: fit-content;
+        }
+        .port {
+          background-color: #00c853;
+          color: white;
+          font-weight: bold;
+          padding: 6px 14px;
+          border-radius: 6px;
+          font-size: 16px;
+          min-width: 60px;
+          text-align: center;
+        }
+        button {
+          background: none;
+          border: none;
+          color: #ccc;
+          font-size: 18px;
+          cursor: pointer;
+          padding: 6px;
+        }
+        button:hover {
+          color: white;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <h3>ACTIVE PORTS</h3>
+        <button class="refresh-btn" onclick="refreshPorts()">
+          <span class="refresh-icon">↻</span>
+          Synchronize
+        </button>
+      </div>
+      ${rows}
+      <script>
+        const vscode = acquireVsCodeApi();
+        
+        function openPort(port) {
+          vscode.postMessage({ command: 'open', port });
+        }
+
+        function refreshPorts() {
+          vscode.postMessage({ command: 'refresh' });
+        }
+      </script>
+    </body>
+    </html>
+  `;
+}
+export function deactivate() {
+    // Cleanup
+}
 //# sourceMappingURL=extension.js.map
