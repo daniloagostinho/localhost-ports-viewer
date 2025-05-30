@@ -1,105 +1,124 @@
-// Extensao VS Code - Visual premium com separação de info e botão de ação
+// Extensão VS Code com WebviewViewProvider no painel lateral (visual premium)
 
-import { exec } from 'child_process';
-import * as os from 'os';
+import psList from 'ps-list';
+import tcpPortUsed from 'tcp-port-used';
 import * as vscode from 'vscode';
 
 export function activate(context: vscode.ExtensionContext) {
-  const provider = new LocalhostPortsProvider();
-  vscode.window.registerTreeDataProvider('localhostPorts', provider);
-  vscode.commands.registerCommand('localhostPorts.refresh', () => provider.refresh());
-  vscode.commands.registerCommand('localhostPorts.open', (port: string) => {
-    vscode.env.openExternal(vscode.Uri.parse(`http://localhost:${port}`));
-  });
-
-  provider.refresh();
+  const provider = new LocalhostPortsWebviewProvider();
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider('localhostPorts', provider)
+  );
 }
 
-class LocalhostPortsProvider implements vscode.TreeDataProvider<PortItem> {
-  private _onDidChangeTreeData: vscode.EventEmitter<PortItem | undefined | null> = new vscode.EventEmitter<PortItem | undefined | null>();
-  readonly onDidChangeTreeData: vscode.Event<PortItem | undefined | null> = this._onDidChangeTreeData.event;
+class LocalhostPortsWebviewProvider implements vscode.WebviewViewProvider {
+  async resolveWebviewView(webviewView: vscode.WebviewView) {
+    const ports = await getListeningPorts();
 
-  private ports: PortInfo[] = [];
-
-  refresh(): void {
-    this.getListeningPorts().then((ports) => {
-      this.ports = ports;
-      vscode.window.showInformationMessage(`Detectadas ${ports.length} porta(s): ${ports.map(p => p.port).join(', ')}`);
-      this._onDidChangeTreeData.fire(null);
-    });
-  }
-
-  getTreeItem(element: PortItem): vscode.TreeItem {
-    return element;
-  }
-
-  getChildren(): Thenable<PortItem[]> {
-    return Promise.resolve(this.ports.map(p => new PortItem(p)));
-  }
-
-  private getListeningPorts(): Promise<PortInfo[]> {
-    return new Promise((resolve) => {
-      const platform = os.platform();
-      let command = '';
-
-      if (platform === 'darwin' || platform === 'linux') {
-        command = 'lsof -iTCP -sTCP:LISTEN -P -n';
-      } else if (platform === 'win32') {
-        command = 'netstat -ano';
-      } else {
-        vscode.window.showErrorMessage(`Sistema operacional não suportado: ${platform}`);
-        return resolve([]);
-      }
-
-      exec(command, (err, stdout) => {
-        if (err || !stdout) {
-          vscode.window.showErrorMessage(`Erro ao executar comando: ${err}`);
-          return resolve([]);
-        }
-
-        const map = new Map<string, string>();
-
-        stdout.split('\n').forEach(line => {
-          const portMatch = line.match(/:(\d+)/);
-          const commandMatch = line.trim().split(/\s+/)[0];
-          if (portMatch && portMatch[1]) {
-            const port = portMatch[1];
-            if (!isNaN(Number(port)) && Number(port) >= 80 && Number(port) <= 65535) {
-              const label = commandMatch || 'desconhecida';
-              map.set(port, label);
-            }
-          }
-
-          if (line.includes('4200')) {
-            map.set('4200', 'node');
-          }
-        });
-
-        const result: PortInfo[] = Array.from(map.entries()).map(([port, proc]) => ({ port, process: proc }));
-        resolve(result);
-      });
-    });
-  }
-}
-
-class PortItem extends vscode.TreeItem {
-  constructor(public readonly info: PortInfo) {
-    super(`${info.port}`, vscode.TreeItemCollapsibleState.None);
-
-    this.label = `${info.port}`;
-    this.description = info.process.toUpperCase();
-    this.tooltip = `Abrir no navegador: http://localhost:${info.port}`;
-
-    this.command = {
-      command: 'localhostPorts.open',
-      title: 'Abrir no navegador',
-      arguments: [info.port]
+    webviewView.webview.options = {
+      enableScripts: true
     };
 
-    this.iconPath = new vscode.ThemeIcon('globe', new vscode.ThemeColor('charts.blue'));
+    webviewView.webview.html = getWebviewContent(ports);
+
+    webviewView.webview.onDidReceiveMessage(msg => {
+      if (msg.command === 'open') {
+        vscode.env.openExternal(vscode.Uri.parse(`http://localhost:${msg.port}`));
+      }
+    });
   }
 }
 
+async function getListeningPorts(): Promise<PortInfo[]> {
+  const knownPorts = [80, 3000, 3001, 4000, 4200, 5000, 5432, 6000, 7000, 8080, 9000];
+  const result: PortInfo[] = [];
+  const processes = await psList();
+
+  const fallbackNames: Record<string, string> = {
+    '4200': 'Angular',
+    '5432': 'Postgres',
+    '5000': 'Node/Express',
+    '7000': 'ControlCe',
+    '8080': 'http-server'
+  };
+
+  for (const port of knownPorts) {
+    const inUse = await tcpPortUsed.check(port, '127.0.0.1');
+    if (inUse) {
+      const match = processes.find(p => p.cmd?.includes(port.toString()));
+      const processName = match?.name || fallbackNames[port.toString()] || 'Unknown';
+      result.push({ port: port.toString(), process: processName });
+    }
+  }
+
+  return result;
+}
+
+function getWebviewContent(ports: PortInfo[]): string {
+  const rows = ports.map(p => `
+    <div class="row">
+      <div class="port">${p.port}</div>
+      <div class="label">${p.process.toUpperCase()}</div>
+      <button onclick="openPort('${p.port}')">→</button>
+    </div>
+  `).join('\n');
+
+  return `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <style>
+        body {
+          background-color: #1e1e1e;
+          color: #ccc;
+          font-family: sans-serif;
+          padding: 16px;
+        }
+        .row {
+          display: flex;
+          align-items: center;
+          margin-bottom: 12px;
+        }
+        .port {
+          background-color: #00c853;
+          color: white;
+          font-weight: bold;
+          padding: 6px 14px;
+          border-radius: 6px;
+          font-size: 16px;
+          min-width: 60px;
+          text-align: center;
+        }
+        .label {
+          margin-left: 12px;
+          font-size: 14px;
+          flex-grow: 1;
+        }
+        button {
+          background: none;
+          border: none;
+          color: #ccc;
+          font-size: 18px;
+          cursor: pointer;
+        }
+        button:hover {
+          color: white;
+        }
+      </style>
+    </head>
+    <body>
+      <h3>LOCALHOST: LOCALHOST PORTS</h3>
+      ${rows}
+      <script>
+        const vscode = acquireVsCodeApi();
+        function openPort(port) {
+          vscode.postMessage({ command: 'open', port });
+        }
+      </script>
+    </body>
+    </html>
+  `;
+}
 
 interface PortInfo {
   port: string;

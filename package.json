@@ -1,9 +1,10 @@
 {
   "name": "localhost-ports-viewer",
   "displayName": "Localhost Ports Viewer",
-  "publisher": "daniloagostinho",
-  "description": "Visualize e abra serviços rodando no localhost diretamente do VS Code.",
-  "version": "0.0.1",
+  "publisher": "danilodevsilva",
+  "description": "View and open services running on localhost directly from VS Code.",
+  "type": "module",
+  "version": "0.0.5",
   "engines": {
     "vscode": "^1.100.0"
   },
@@ -29,20 +30,12 @@
       "localhostPortsContainer": [
         {
           "id": "localhostPorts",
-          "name": "Localhost Ports"
+          "name": "Localhost Ports",
+          "icon": "icon.png",
+          "type": "webview"
         }
       ]
-    },
-    "commands": [
-      {
-        "command": "localhostPorts.refresh",
-        "title": "Refresh Localhost Ports"
-      },
-      {
-        "command": "localhostPorts.open",
-        "title": "Open Port in Browser"
-      }
-    ]
+    }
   },
   "repository": {
     "type": "git",
@@ -59,6 +52,7 @@
   "devDependencies": {
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.17.50",
+    "@types/tcp-port-used": "^1.0.4",
     "@types/vscode": "^1.100.0",
     "@typescript-eslint/eslint-plugin": "^8.31.1",
     "@typescript-eslint/parser": "^8.31.1",
@@ -66,5 +60,9 @@
     "@vscode/test-electron": "^2.5.2",
     "eslint": "^9.25.1",
     "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "ps-list": "^8.1.1",
+    "tcp-port-used": "^1.0.2"
   }
 }
