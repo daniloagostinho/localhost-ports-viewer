@@ -43,7 +43,13 @@ async function getListeningPorts(): Promise<PortInfo[]> {
   };
 
   for (const port of knownPorts) {
-    const inUse = await tcpPortUsed.check(port, '127.0.0.1');
+    // Verifica IPv4 e IPv6
+    const [v4, v6] = await Promise.all([
+      tcpPortUsed.check(port, '127.0.0.1'),
+      tcpPortUsed.check(port, '::1')
+    ]);
+    const inUse = v4 || v6;
+
     if (inUse) {
       const match = processes.find(p => p.cmd?.includes(port.toString()));
       const processName = match?.name || fallbackNames[port.toString()] || 'Unknown';
