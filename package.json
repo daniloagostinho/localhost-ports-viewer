@@ -4,7 +4,7 @@
   "publisher": "danilodevsilva",
   "description": "View and open services running on localhost directly from VS Code.",
   "type": "module",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "engines": {
     "vscode": "^1.100.0"
   },

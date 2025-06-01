@@ -73,57 +73,194 @@ function generatePortRange(start: number, end: number): number[] {
   return Array.from({ length: end - start + 1 }, (_, i) => start + i);
 }
 
-interface ProcessInfo {
-  name: string;
-  pid: string;
-  cmd?: string;
+interface ServiceInfo {
+  framework?: string;
+  platform: string;
 }
 
-async function identifyService(processName: string, pid: string, isWindows: boolean): Promise<string> {
+async function getProcessCommand(pid: string, isWindows: boolean): Promise<string> {
   try {
-    let cmd = '';
     if (isWindows) {
-      const { stdout } = await execAsync(`wmic process where ProcessId=${pid} get CommandLine`);
-      cmd = stdout.toLowerCase();
-    } else {
-      // No Unix, tenta pegar a linha de comando completa
+      // No Windows, tenta wmic primeiro para pegar a linha de comando completa
       try {
-        const { stdout } = await execAsync(`ps -p ${pid} -o command=`);
-        cmd = stdout.toLowerCase();
+        const { stdout } = await execAsync(`wmic process where ProcessId=${pid} get CommandLine /format:list`);
+        if (stdout.trim()) {
+          return stdout.toLowerCase();
+        }
+      } catch {}
+
+      // Se falhar, tenta tasklist com mais detalhes
+      try {
+        const { stdout } = await execAsync(`tasklist /v /fi "PID eq ${pid}"`);
+        return stdout.toLowerCase();
+      } catch {}
+    } else {
+      // No Unix, tenta diferentes métodos
+      try {
+        // Tenta ps com formato detalhado primeiro
+        const { stdout } = await execAsync(`ps -p ${pid} -o command= -o args= -o comm=`);
+        return stdout.toLowerCase();
       } catch {
-        // Em alguns sistemas, pode precisar de sudo, então tenta ps aux como fallback
-        const { stdout } = await execAsync(`ps aux | grep ${pid}`);
-        cmd = stdout.toLowerCase();
+        try {
+          // Depois tenta ps aux
+          const { stdout } = await execAsync(`ps aux | grep ${pid} | grep -v grep`);
+          return stdout.toLowerCase();
+        } catch {
+          try {
+            // Por último tenta procfs no Linux
+            const { stdout: cmdline } = await execAsync(`cat /proc/${pid}/cmdline`);
+            const { stdout: environ } = await execAsync(`cat /proc/${pid}/environ`);
+            return `${cmdline} ${environ}`.toLowerCase();
+          } catch {}
+        }
       }
     }
+  } catch (error) {
+    console.error('Error getting process command:', error);
+  }
+  return '';
+}
 
-    // Identificadores de diferentes frameworks/serviços
-    const serviceIdentifiers = [
-      { name: 'Angular', patterns: ['ng serve', '@angular/cli'] },
-      { name: 'React', patterns: ['react-scripts start', 'next dev', 'vite --port'] },
-      { name: 'Vue', patterns: ['vue-cli-service serve', '@vue/cli'] },
-      { name: 'Nx', patterns: ['nx serve', '@nrwl/cli'] },
-      { name: 'Spring Boot', patterns: ['spring-boot', 'tomcat'] },
-      { name: 'Node.js', patterns: ['node server', 'nodemon', 'express'] },
-      { name: 'Python', patterns: ['flask run', 'django', 'uvicorn', 'python manage.py runserver'] },
-      { name: '.NET', patterns: ['dotnet run', 'dotnet watch run', 'aspnetcore'] },
-      { name: 'PHP', patterns: ['php -S', 'artisan serve', 'symfony server:start'] }
+async function getNodeModules(pid: string, isWindows: boolean): Promise<string[]> {
+  try {
+    if (isWindows) {
+      const { stdout } = await execAsync(`wmic process where ProcessId=${pid} get ExecutablePath /format:list`);
+      const path = stdout.trim().split('=')[1];
+      if (path) {
+        const workingDir = path.substring(0, path.lastIndexOf('\\'));
+        try {
+          const { stdout: modules } = await execAsync(`dir "${workingDir}\\node_modules" /b`);
+          return modules.split('\n').map(m => m.trim().toLowerCase());
+        } catch {}
+      }
+    } else {
+      const { stdout: pwdOutput } = await execAsync(`lsof -p ${pid} | grep cwd`);
+      const workingDir = pwdOutput.split(/\s+/)[8];
+      if (workingDir) {
+        try {
+          const { stdout: modules } = await execAsync(`ls ${workingDir}/node_modules`);
+          return modules.split('\n').map(m => m.trim().toLowerCase());
+        } catch {}
+      }
+    }
+  } catch (error) {
+    console.error('Error getting node_modules:', error);
+  }
+  return [];
+}
+
+async function identifyService(processName: string, pid: string, isWindows: boolean): Promise<ServiceInfo> {
+  try {
+    // Pega o comando completo do processo
+    const cmd = await getProcessCommand(pid, isWindows);
+    
+    // Se for um processo node, tenta identificar o framework
+    if (cmd.includes('node') || processName.toLowerCase().includes('node')) {
+      // Pega a lista de módulos node instalados
+      const nodeModules = await getNodeModules(pid, isWindows);
+      
+      // Identificadores específicos nos comandos e módulos
+      const frameworkPatterns = {
+        Angular: {
+          cmd: ['ng serve', '@angular/cli', '@angular-devkit', 'angular.json'],
+          modules: ['@angular/core', '@angular/cli', '@angular-devkit']
+        },
+        React: {
+          cmd: ['react-scripts', 'create-react-app', 'next dev', 'vite'],
+          modules: ['react', 'react-dom', 'react-scripts', 'next', '@vitejs']
+        },
+        Vue: {
+          cmd: ['vue-cli-service', '@vue/cli', 'nuxt'],
+          modules: ['vue', '@vue/cli-service', 'nuxt']
+        },
+        Nx: {
+          cmd: ['nx serve', '@nrwl/cli'],
+          modules: ['@nrwl/workspace', '@nrwl/cli']
+        },
+        Express: {
+          cmd: ['express', 'node server'],
+          modules: ['express']
+        },
+        NestJS: {
+          cmd: ['nest start', '@nestjs'],
+          modules: ['@nestjs/core']
+        }
+      };
+
+      // Verifica cada framework
+      for (const [framework, patterns] of Object.entries(frameworkPatterns)) {
+        // Verifica padrões no comando
+        const hasCmdPattern = patterns.cmd.some(pattern => cmd.includes(pattern));
+        // Verifica módulos instalados
+        const hasModules = patterns.modules.some(module => nodeModules.includes(module));
+
+        if (hasCmdPattern || hasModules) {
+          return {
+            framework,
+            platform: 'Node.js'
+          };
+        }
+      }
+
+      // Se não identificou nenhum framework específico
+      return {
+        platform: 'Node.js'
+      };
+    }
+
+    // Identificadores para outros serviços
+    const servicePatterns = [
+      {
+        name: 'PostgreSQL',
+        patterns: ['postgres', 'postgresql', 'psql']
+      },
+      {
+        name: 'MySQL',
+        patterns: ['mysqld', 'mysql.server', 'mariadb']
+      },
+      {
+        name: 'MongoDB',
+        patterns: ['mongod', 'mongodb']
+      },
+      {
+        name: 'Redis',
+        patterns: ['redis-server']
+      },
+      {
+        name: 'Java',
+        patterns: ['java', 'javaw', '.jar', 'spring-boot', 'tomcat']
+      },
+      {
+        name: 'Python',
+        patterns: ['python', 'flask', 'django', 'uvicorn', 'gunicorn']
+      },
+      {
+        name: 'PHP',
+        patterns: ['php', 'apache2', 'nginx', 'artisan', 'symfony']
+      }
     ];
 
-    for (const service of serviceIdentifiers) {
-      if (service.patterns.some(pattern => cmd.includes(pattern))) {
-        return service.name;
+    // Verifica outros serviços
+    for (const service of servicePatterns) {
+      if (service.patterns.some(pattern => 
+        cmd.includes(pattern) || 
+        processName.toLowerCase().includes(pattern)
+      )) {
+        return {
+          platform: service.name
+        };
       }
     }
 
-    // Se o processo é node mas não identificamos o framework específico
-    if (processName.toLowerCase().includes('node')) {
-      return 'Node.js';
-    }
-
-    return processName;
+    // Se não identificou nada, retorna o nome do processo
+    return {
+      platform: processName
+    };
   } catch (error) {
-    return processName;
+    console.error('Error identifying service:', error);
+    return {
+      platform: processName
+    };
   }
 }
 
@@ -132,13 +269,10 @@ async function getListeningPorts(): Promise<PortInfo[]> {
   const isWindows = platform() === 'win32';
   
   try {
-    let processOutput = '';
-    let portOutput = '';
-
     if (isWindows) {
-      // Windows: usa netstat e tasklist
-      const { stdout: netstatOutput } = await execAsync('netstat -ano | findstr LISTENING');
-      const { stdout: tasklistOutput } = await execAsync('tasklist /FO CSV');
+      // Windows: usa netstat com mais detalhes
+      const { stdout: netstatOutput } = await execAsync('netstat -ano -p TCP | findstr LISTENING');
+      const { stdout: tasklistOutput } = await execAsync('tasklist /v /fo csv');
       
       // Cria um mapa de PIDs para nomes de processo do tasklist
       const pidToName = new Map<string, string>();
@@ -152,37 +286,31 @@ async function getListeningPorts(): Promise<PortInfo[]> {
         }
       });
 
-      portOutput = netstatOutput;
-      processOutput = tasklistOutput;
-
-      // Processa netstat output
+      // Processa as portas e processos
       const lines = netstatOutput.split('\n');
       const portSet = new Set<string>();
 
       for (const line of lines) {
         if (line.trim()) {
-          // Formato do netstat: Proto  Local Address  Foreign Address  State  PID
           const parts = line.trim().split(/\s+/);
           if (parts.length >= 5) {
             const addressPart = parts[1];
             const pid = parts[4];
             
-            // Extrai a porta do endereço local (formato pode ser *:porta ou [::]:porta ou IP:porta)
             const portMatch = addressPart.match(/:(\d+)$/);
             if (portMatch) {
               const port = portMatch[1];
               if (!portSet.has(port)) {
                 portSet.add(port);
                 
-                // Pega o nome do processo do PID
                 const processName = pidToName.get(pid) || 'PORT IN USE';
+                const serviceInfo = await identifyService(processName, pid, isWindows);
                 
-                // Identifica o serviço
-                const serviceName = await identifyService(processName, pid, isWindows);
-                
+                // Adiciona informações do framework e plataforma
                 result.push({ 
                   port: port,
-                  process: serviceName
+                  process: serviceInfo.platform,
+                  framework: serviceInfo.framework
                 });
               }
             }
@@ -190,17 +318,14 @@ async function getListeningPorts(): Promise<PortInfo[]> {
         }
       }
     } else {
-      // Unix (macOS/Linux): usa lsof
+      // Unix: Combina lsof com mais informações de processo
       const { stdout: lsofOutput } = await execAsync('lsof -i TCP -P -n | grep LISTEN');
-      portOutput = lsofOutput;
 
-      // Processa a saída do lsof
       const lines = lsofOutput.split('\n');
       const portSet = new Set<string>();
 
       for (const line of lines) {
         if (line.trim()) {
-          // Extrai a porta e o processo
           const portMatch = line.match(/[.:](\d+)\s+\(LISTEN\)/);
           const parts = line.split(/\s+/);
           
@@ -212,12 +337,13 @@ async function getListeningPorts(): Promise<PortInfo[]> {
             if (!portSet.has(port)) {
               portSet.add(port);
               
-              // Identifica o serviço
-              const serviceName = await identifyService(processName, pid, isWindows);
+              // Identifica o serviço com framework e plataforma
+              const serviceInfo = await identifyService(processName, pid, isWindows);
               
               result.push({ 
                 port: port,
-                process: serviceName
+                process: serviceInfo.platform,
+                framework: serviceInfo.framework
               });
             }
           }
@@ -225,7 +351,6 @@ async function getListeningPorts(): Promise<PortInfo[]> {
       }
     }
 
-    // Se não encontrou nenhuma porta, usa o fallback
     if (result.length === 0) {
       throw new Error('No ports found, using fallback');
     }
@@ -233,31 +358,72 @@ async function getListeningPorts(): Promise<PortInfo[]> {
   } catch (error) {
     console.error('Error getting active ports:', error);
     
-    // Fallback: Tenta detectar portas em uso sem identificar o serviço
-    const portRanges = generatePortRanges(1024, 65535, 100); // Gera ranges de 100 em 100 portas
+    // Fallback com verificação mais rápida
+    const portRanges = generatePortRanges(1024, 65535, 100);
+    const commonPorts = new Set([3000, 3001, 4200, 5000, 8000, 8080]);
 
+    // Primeiro verifica as portas comuns
+    for (const port of commonPorts) {
+      try {
+        const [v4, v6] = await Promise.all([
+          tcpPortUsed.check(port, '127.0.0.1'),
+          tcpPortUsed.check(port, '::1')
+        ]);
+        
+        if (v4 || v6) {
+          // No fallback, tenta identificar pelo menos alguns serviços comuns pela porta
+          let serviceInfo: ServiceInfo = { platform: 'PORT IN USE' };
+          
+          // Tenta identificar alguns serviços comuns por porta
+          if (port === 4200) {
+            serviceInfo = { framework: 'Angular', platform: 'Node.js' };
+          } else if (port === 3000) {
+            serviceInfo = { framework: 'React', platform: 'Node.js' };
+          } else if (port === 8080) {
+            serviceInfo = { platform: 'Java' };
+          } else if (port === 5432) {
+            serviceInfo = { platform: 'PostgreSQL' };
+          } else if (port === 3306) {
+            serviceInfo = { platform: 'MySQL' };
+          } else if (port === 27017) {
+            serviceInfo = { platform: 'MongoDB' };
+          }
+          
+          result.push({ 
+            port: port.toString(),
+            process: serviceInfo.platform,
+            framework: serviceInfo.framework
+          });
+        }
+      } catch (err) {
+        // Ignora erros de verificação individual de porta
+      }
+    }
+
+    // Depois verifica os outros ranges
     for (const range of portRanges) {
       for (let port = range.start; port <= range.end; port++) {
-        try {
-          const [v4, v6] = await Promise.all([
-            tcpPortUsed.check(port, '127.0.0.1'),
-            tcpPortUsed.check(port, '::1')
-          ]);
-          
-          if (v4 || v6) {
-            result.push({ 
-              port: port.toString(),
-              process: 'PORT IN USE'
-            });
+        if (!commonPorts.has(port)) {
+          try {
+            const [v4, v6] = await Promise.all([
+              tcpPortUsed.check(port, '127.0.0.1'),
+              tcpPortUsed.check(port, '::1')
+            ]);
+            
+            if (v4 || v6) {
+              result.push({ 
+                port: port.toString(),
+                process: 'PORT IN USE'
+              });
+            }
+          } catch (err) {
+            // Ignora erros de verificação individual de porta
           }
-        } catch (err) {
-          // Ignora erros de verificação individual de porta
         }
       }
     }
   }
 
-  // Ordena as portas numericamente
   return result.sort((a, b) => parseInt(a.port) - parseInt(b.port));
 }
 
@@ -273,18 +439,22 @@ function generatePortRanges(start: number, end: number, step: number): Array<{st
 }
 
 function getWebviewContent(ports: PortInfo[]): string {
-  const rows = ports.map(p => `
+  const rows = ports.map(p => {
+    const serviceClass = p.process.toLowerCase().replace(/[^a-z0-9]/g, '-');
+    const serviceDisplay = p.framework ? `${p.framework} (${p.process})` : p.process;
+    
+    return `
     <div class="row">
       <div class="port-info">
         <div class="port">${p.port}</div>
-        <div class="service ${p.process.toLowerCase().replace(/[^a-z0-9]/g, '-')}">${p.process}</div>
+        <div class="service ${serviceClass}">${serviceDisplay}</div>
       </div>
       <button class="open-btn" onclick="openPort('${p.port}')">
         <span class="arrow">→</span>
         <span class="tooltip">Open in browser</span>
       </button>
     </div>
-  `).join('\n');
+  `}).join('\n');
 
   return `
     <!DOCTYPE html>
@@ -329,7 +499,7 @@ function getWebviewContent(ports: PortInfo[]): string {
           justify-content: space-between;
           margin-bottom: 8px;
           background: #252525;
-          padding: 8px;
+          padding: 8px 12px;
           border-radius: 8px;
           transition: all 0.2s ease;
         }
@@ -344,7 +514,7 @@ function getWebviewContent(ports: PortInfo[]): string {
         .port {
           background-color: #2ea043;
           color: white;
-          font-weight: bold;
+          font-weight: 600;
           padding: 6px 12px;
           border-radius: 6px;
           font-size: 14px;
@@ -358,8 +528,12 @@ function getWebviewContent(ports: PortInfo[]): string {
           border-radius: 4px;
           text-transform: uppercase;
           letter-spacing: 0.5px;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          white-space: nowrap;
+          background: #333;
         }
-        /* Cores específicas para cada serviço */
         .angular {
           background-color: #dd0031;
           color: white;
@@ -372,24 +546,32 @@ function getWebviewContent(ports: PortInfo[]): string {
           background-color: #42b883;
           color: white;
         }
-        .nx {
-          background-color: #143055;
-          color: white;
-        }
         .node-js {
           background-color: #68a063;
           color: white;
         }
-        .spring-boot {
-          background-color: #6db33f;
+        .postgresql {
+          background-color: #336791;
+          color: white;
+        }
+        .mysql {
+          background-color: #00758f;
+          color: white;
+        }
+        .mongodb {
+          background-color: #4db33d;
+          color: white;
+        }
+        .redis {
+          background-color: #d82c20;
+          color: white;
+        }
+        .java {
+          background-color: #007396;
           color: white;
         }
         .python {
           background-color: #3776ab;
-          color: white;
-        }
-        .net {
-          background-color: #512bd4;
           color: white;
         }
         .php {
@@ -473,6 +655,7 @@ function getWebviewContent(ports: PortInfo[]): string {
 interface PortInfo {
   port: string;
   process: string;
+  framework?: string;
 }
 
 export function deactivate() {
