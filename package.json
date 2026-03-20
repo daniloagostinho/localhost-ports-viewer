@@ -2,14 +2,27 @@
   "name": "localhost-ports-viewer",
   "displayName": "Localhost Ports Viewer",
   "publisher": "danilodevsilva",
-  "description": "View and open services running on localhost directly from VS Code.",
+  "description": "Monitor all localhost ports in real time. Detects Node, React, Next.js, databases and more — open, copy or kill any service directly from the VS Code sidebar.",
   "type": "module",
-  "version": "0.0.10",
+  "version": "0.0.18",
   "engines": {
     "vscode": "^1.100.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Visualization"
+  ],
+  "keywords": [
+    "localhost",
+    "ports",
+    "port viewer",
+    "dev server",
+    "process monitor",
+    "network",
+    "services",
+    "debugging",
+    "node",
+    "development tools"
   ],
   "icon": "icon.png",
   "main": "./out/extension.js",
@@ -67,9 +80,10 @@
       }
     }
   },
+  "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/seu-usuario/seu-repo.git"
+    "url": "https://github.com/daniloagostinho/localhost-ports-viewer.git"
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

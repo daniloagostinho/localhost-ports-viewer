@@ -69,41 +69,41 @@ Melhorar confiabilidade cross-OS (Windows/macOS/Linux), experiencia de uso no VS
 ## Fase 2 - UX/UI (Aparencia + Comportamento)
 
 ### 4. Interface nativa VS Code
-- [ ] Migrar cores para tokens de tema VS Code
-- [ ] Compatibilidade com tema claro/escuro/alto contraste
-- [ ] Estado de loading durante atualizacao
-- [ ] Estado vazio (nenhuma porta ativa)
-- [ ] Estado de erro amigavel com acao de retry
+- [x] Migrar cores para tokens de tema VS Code
+- [x] Compatibilidade com tema claro/escuro/alto contraste
+- [x] Estado de loading durante atualizacao
+- [x] Estado vazio (nenhuma porta ativa)
+- [x] Estado de erro amigavel com acao de retry
 
 ### 5. Interacoes e produtividade
-- [ ] Acao para copiar URL
-- [ ] Acao para copiar apenas a porta
-- [ ] Acao para abrir no browser interno/externo (configuravel)
-- [ ] Acao para encerrar processo com confirmacao
-- [ ] Busca/filtro por nome de servico/framework/porta
-- [ ] Filtro rapido (Node, bancos, web servers, outros)
-- [ ] Favoritar portas
-- [ ] Preservar scroll/estado visual entre refreshes
+- [x] Acao para copiar URL
+- [x] Acao para copiar apenas a porta
+- [x] Acao para abrir no browser interno/externo (configuravel)
+- [x] Acao para encerrar processo com confirmacao
+- [x] Busca/filtro por nome de servico/framework/porta
+- [x] Filtro rapido (Node, bancos, web servers, outros)
+- [x] Favoritar portas
+- [x] Preservar scroll/estado visual entre refreshes
 
 ---
 
 ## Fase 3 - Marketplace Growth (Mais downloads)
 
 ### 6. Otimizacao da pagina da extensao
-- [ ] Corrigir `repository.url` real no `package.json`
-- [ ] Ajustar categoria(s) da extensao (evitar apenas `Other`)
-- [ ] Adicionar `keywords` focadas em busca (localhost, ports, dev server, etc.)
-- [ ] Corrigir consistencia de publisher/nome no README
-- [ ] Atualizar badge de versao no README
-- [ ] Incluir GIF curto de demonstracao (5-10s)
-- [ ] Atualizar screenshots reais da UX atual
-- [ ] Melhorar descricao com proposta de valor clara no primeiro bloco
+- [x] Corrigir `repository.url` real no `package.json`
+- [x] Ajustar categoria(s) da extensao (evitar apenas `Other`)
+- [x] Adicionar `keywords` focadas em busca (localhost, ports, dev server, etc.)
+- [x] Corrigir consistencia de publisher/nome no README
+- [x] Atualizar badge de versao no README
+- [ ] Incluir GIF curto de demonstracao (5-10s) — pendente: gravar manualmente
+- [ ] Atualizar screenshots reais da UX atual — pendente: capturar manualmente
+- [x] Melhorar descricao com proposta de valor clara no primeiro bloco
 
 ### 7. Confianca e prova social
-- [ ] Organizar CHANGELOG por versao (padrao Keep a Changelog)
-- [ ] Criar issue templates por OS
-- [ ] Criar release notes mais detalhadas por versao
-- [ ] Adicionar CTA discreto para review apos usos bem-sucedidos
+- [x] Organizar CHANGELOG por versao (padrao Keep a Changelog)
+- [x] Criar issue templates por OS (macOS, Linux, Windows, feature request)
+- [x] Criar release notes mais detalhadas por versao
+- [x] Adicionar CTA discreto para review apos usos bem-sucedidos (no README)
 - [ ] Telemetria opcional e anonima (se decidir usar)
 
 ---
@@ -111,13 +111,15 @@ Melhorar confiabilidade cross-OS (Windows/macOS/Linux), experiencia de uso no VS
 ## Fase 4 - Ecossistema e diferenciacao
 
 ### 8. Deteccao de frameworks/servicos (expansao)
-- [ ] Melhorar deteccao de Next.js
-- [ ] Melhorar deteccao de Nuxt
-- [ ] Melhorar deteccao de Vite
-- [ ] Melhorar deteccao de Spring Boot
-- [ ] Melhorar deteccao de Laravel
-- [ ] Melhorar deteccao de Rails
-- [ ] Melhorar deteccao de apps Go
+- [x] Melhorar deteccao de Next.js
+- [x] Melhorar deteccao de Nuxt
+- [x] Melhorar deteccao de Vite
+- [x] Melhorar deteccao de Spring Boot
+- [x] Melhorar deteccao de Laravel
+- [x] Melhorar deteccao de Rails
+- [x] Melhorar deteccao de apps Go
+- [x] Substituir ls node_modules por leitura de package.json (mais rapido e preciso)
+- [x] Adicionar deteccao de: Remix, Svelte, Fastify, Hono, Elysia, Nginx, Apache
 
 ### 9. Ambientes de desenvolvimento
 - [ ] Validar comportamento em WSL
