@@ -86,39 +86,42 @@ function setCachedService(pid: string, serviceInfo: ServiceInfo): void {
 
 // ─── Process command getters ──────────────────────────────────────────────────
 
-async function getProcessCommandWindows(pid: string): Promise<string> {
+// getRawCommand preserves original case (needed for path extraction)
+async function getRawCommandWindows(pid: string): Promise<string> {
   try {
     const ps = `powershell -NoProfile -Command "Get-Process -Id ${pid} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty CommandLine"`;
     const out = await execWithTimeout(ps);
-    if (out.trim()) { return out.toLowerCase(); }
+    if (out.trim()) { return out.trim(); }
   } catch {}
   try {
-    return (await execWithTimeout(`tasklist /v /fi "PID eq ${pid}"`)).toLowerCase();
+    return (await execWithTimeout(`tasklist /v /fi "PID eq ${pid}"`)).trim();
   } catch {}
   return '';
 }
 
-async function getProcessCommandUnix(pid: string): Promise<string> {
+async function getRawCommandUnix(pid: string): Promise<string> {
   try {
-    return (await execWithTimeout(`ps -p ${pid} -o command= -o args= -o comm=`)).toLowerCase();
+    return (await execWithTimeout(`ps -p ${pid} -o args=`)).trim();
   } catch {}
   try {
-    return (await execWithTimeout(`ps aux | grep ${pid} | grep -v grep`)).toLowerCase();
+    return (await execWithTimeout(`ps aux | grep "^[^ ]*[ ]*${pid} " | grep -v grep`)).trim();
   } catch {}
   return '';
 }
 
-async function getProcessCommand(pid: string, isWindows: boolean): Promise<string> {
-  return isWindows ? getProcessCommandWindows(pid) : getProcessCommandUnix(pid);
+async function getRawCommand(pid: string, isWindows: boolean): Promise<string> {
+  return isWindows ? getRawCommandWindows(pid) : getRawCommandUnix(pid);
 }
 
 // ─── Working directory ────────────────────────────────────────────────────────
 
 async function getWorkingDirUnix(pid: string): Promise<string> {
   try {
-    const out = await execWithTimeout(`lsof -p ${pid} 2>/dev/null | grep cwd`);
-    const parts = out.trim().split(/\s+/);
-    if (parts.length >= 9) { return parts.slice(8).join(' '); }
+    // -Fn outputs field names; lines starting with 'n' are file names (paths)
+    // -a -d cwd restricts to the cwd file descriptor only
+    const out = await execWithTimeout(`lsof -p ${pid} -a -d cwd -Fn 2>/dev/null`);
+    const line = out.split('\n').find(l => l.startsWith('n'));
+    if (line && line.length > 1) { return line.slice(1).trim(); }
   } catch {}
   try {
     return (await execWithTimeout(`readlink /proc/${pid}/cwd`)).trim();
@@ -157,19 +160,40 @@ async function readPkgInfo(cwd: string): Promise<PkgInfo> {
   }
 }
 
+// ─── Extract project dir from cmd ────────────────────────────────────────────
+
+function extractProjectDirFromCmd(cmd: string): string {
+  // Match absolute path after node/node.exe: e.g. node /home/user/app/node_modules/.bin/vite
+  const match = cmd.match(/node(?:\.exe)?\s+(\/[^\s]+)/);
+  if (!match) { return ''; }
+  const scriptPath = match[1];
+  // If inside node_modules, project root is the parent of node_modules
+  const nmIdx = scriptPath.indexOf('/node_modules/');
+  if (nmIdx !== -1) { return scriptPath.substring(0, nmIdx); }
+  // Otherwise use the script's directory
+  const lastSlash = scriptPath.lastIndexOf('/');
+  return lastSlash > 0 ? scriptPath.substring(0, lastSlash) : '';
+}
+
 // ─── Node.js framework detector ───────────────────────────────────────────────
 
 function detectNodeFramework(cmd: string, deps: string[]): string | undefined {
   const has = (d: string) => deps.includes(d);
 
-  // cmd-based fast checks
-  if (cmd.includes('react-scripts'))                          { return 'React'; }
-  if (cmd.includes('ng serve') || cmd.includes('@angular/cli')) { return 'Angular'; }
-  if (cmd.includes('nest start') || cmd.includes('@nestjs'))  { return 'NestJS'; }
-  if (cmd.includes('astro'))                                  { return 'Astro'; }
-  if (cmd.includes('remix-serve') || cmd.includes('@remix-run')) { return 'Remix'; }
+  // cmd-based fast checks (cover common dev-server binaries)
+  if (cmd.includes('react-scripts'))                              { return 'React'; }
+  if (cmd.includes('ng serve') || cmd.includes('@angular/cli'))   { return 'Angular'; }
+  if (cmd.includes('nest start') || cmd.includes('@nestjs'))      { return 'NestJS'; }
+  if (cmd.includes('astro'))                                      { return 'Astro'; }
+  if (cmd.includes('remix-serve') || cmd.includes('@remix-run'))  { return 'Remix'; }
+  if (cmd.includes('nuxt'))                                       { return 'Nuxt'; }
+  if (cmd.includes('next'))                                       { return 'Next.js'; }
+  if (cmd.includes('vue-cli-service') || cmd.includes('@vue/cli')){ return 'Vue'; }
+  if (cmd.includes('svelte-kit') || cmd.includes('@sveltejs'))    { return 'SvelteKit'; }
+  if (cmd.includes('vite'))                                       { return 'Vite'; }
+  if (cmd.includes('webpack'))                                    { return 'Webpack'; }
 
-  // deps-based (specific → generic)
+  // deps-based (most accurate — specific → generic)
   if (deps.length > 0) {
     if (has('next'))                                 { return 'Next.js'; }
     if (has('nuxt') || has('@nuxt/core'))            { return 'Nuxt'; }
@@ -191,10 +215,6 @@ function detectNodeFramework(cmd: string, deps: string[]): string | undefined {
     if (has('vite'))                                 { return 'Vite'; }
     if (has('webpack') || has('webpack-dev-server')) { return 'Webpack'; }
   }
-
-  // cmd-based fallbacks
-  if (cmd.includes('vite'))    { return 'Vite'; }
-  if (cmd.includes('webpack')) { return 'Webpack'; }
 
   return undefined;
 }
@@ -226,25 +246,27 @@ async function identifyService(processName: string, pid: string, isWindows: bool
   if (cached) { return cached; }
 
   try {
-    const cmd = await getProcessCommand(pid, isWindows);
+    // rawCmd preserves original case — needed for filesystem path operations
+    const rawCmd = await getRawCommand(pid, isWindows);
+    const cmd = rawCmd.toLowerCase();           // lowercased for pattern matching only
     const nameLower = processName.toLowerCase();
 
     if (cmd.includes('node') || nameLower.includes('node')) {
-      let framework: string | undefined;
-
-      try {
-        const cwd = await getWorkingDir(pid, isWindows);
-        if (cwd) {
-          const pkgInfo = await readPkgInfo(cwd);
-          framework = detectNodeFramework(cmd, pkgInfo.deps);
-          debugLog('PID %s cwd=%s deps=%d framework=%s', pid, cwd, pkgInfo.deps.length, framework);
-        }
-      } catch (err) {
-        debugLog('readPkgInfo failed for PID %s: %o', pid, err);
-      }
+      // 1st pass: cmd-only detection (zero I/O)
+      let framework = detectNodeFramework(cmd, []);
 
       if (!framework) {
-        framework = detectNodeFramework(cmd, []);
+        try {
+          // Use rawCmd (original case) for path extraction so cat/readFile works on macOS
+          const cwd = extractProjectDirFromCmd(rawCmd) || await getWorkingDir(pid, isWindows);
+          if (cwd) {
+            const pkgInfo = await readPkgInfo(cwd);
+            framework = detectNodeFramework(cmd, pkgInfo.deps);
+            debugLog('PID %s cwd=%s deps=%d framework=%s', pid, cwd, pkgInfo.deps.length, framework);
+          }
+        } catch (err) {
+          debugLog('readPkgInfo failed for PID %s: %o', pid, err);
+        }
       }
 
       const result: ServiceInfo = { framework, platform: 'Node.js' };
