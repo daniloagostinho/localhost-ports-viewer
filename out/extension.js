@@ -47,42 +47,45 @@ function setCachedService(pid, serviceInfo) {
     pidCache.set(pid, { serviceInfo, expiresAt: Date.now() + PID_CACHE_TTL_MS });
 }
 // ─── Process command getters ──────────────────────────────────────────────────
-async function getProcessCommandWindows(pid) {
+// getRawCommand preserves original case (needed for path extraction)
+async function getRawCommandWindows(pid) {
     try {
         const ps = `powershell -NoProfile -Command "Get-Process -Id ${pid} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty CommandLine"`;
         const out = await execWithTimeout(ps);
         if (out.trim()) {
-            return out.toLowerCase();
+            return out.trim();
         }
     }
     catch { }
     try {
-        return (await execWithTimeout(`tasklist /v /fi "PID eq ${pid}"`)).toLowerCase();
+        return (await execWithTimeout(`tasklist /v /fi "PID eq ${pid}"`)).trim();
     }
     catch { }
     return '';
 }
-async function getProcessCommandUnix(pid) {
+async function getRawCommandUnix(pid) {
     try {
-        return (await execWithTimeout(`ps -p ${pid} -o command= -o args= -o comm=`)).toLowerCase();
+        return (await execWithTimeout(`ps -p ${pid} -o args=`)).trim();
     }
     catch { }
     try {
-        return (await execWithTimeout(`ps aux | grep ${pid} | grep -v grep`)).toLowerCase();
+        return (await execWithTimeout(`ps aux | grep "^[^ ]*[ ]*${pid} " | grep -v grep`)).trim();
     }
     catch { }
     return '';
 }
-async function getProcessCommand(pid, isWindows) {
-    return isWindows ? getProcessCommandWindows(pid) : getProcessCommandUnix(pid);
+async function getRawCommand(pid, isWindows) {
+    return isWindows ? getRawCommandWindows(pid) : getRawCommandUnix(pid);
 }
 // ─── Working directory ────────────────────────────────────────────────────────
 async function getWorkingDirUnix(pid) {
     try {
-        const out = await execWithTimeout(`lsof -p ${pid} 2>/dev/null | grep cwd`);
-        const parts = out.trim().split(/\s+/);
-        if (parts.length >= 9) {
-            return parts.slice(8).join(' ');
+        // -Fn outputs field names; lines starting with 'n' are file names (paths)
+        // -a -d cwd restricts to the cwd file descriptor only
+        const out = await execWithTimeout(`lsof -p ${pid} -a -d cwd -Fn 2>/dev/null`);
+        const line = out.split('\n').find(l => l.startsWith('n'));
+        if (line && line.length > 1) {
+            return line.slice(1).trim();
         }
     }
     catch { }
@@ -118,10 +121,27 @@ async function readPkgInfo(cwd) {
         return { deps: [] };
     }
 }
+// ─── Extract project dir from cmd ────────────────────────────────────────────
+function extractProjectDirFromCmd(cmd) {
+    // Match absolute path after node/node.exe: e.g. node /home/user/app/node_modules/.bin/vite
+    const match = cmd.match(/node(?:\.exe)?\s+(\/[^\s]+)/);
+    if (!match) {
+        return '';
+    }
+    const scriptPath = match[1];
+    // If inside node_modules, project root is the parent of node_modules
+    const nmIdx = scriptPath.indexOf('/node_modules/');
+    if (nmIdx !== -1) {
+        return scriptPath.substring(0, nmIdx);
+    }
+    // Otherwise use the script's directory
+    const lastSlash = scriptPath.lastIndexOf('/');
+    return lastSlash > 0 ? scriptPath.substring(0, lastSlash) : '';
+}
 // ─── Node.js framework detector ───────────────────────────────────────────────
 function detectNodeFramework(cmd, deps) {
     const has = (d) => deps.includes(d);
-    // cmd-based fast checks
+    // cmd-based fast checks (cover common dev-server binaries)
     if (cmd.includes('react-scripts')) {
         return 'React';
     }
@@ -137,7 +157,25 @@ function detectNodeFramework(cmd, deps) {
     if (cmd.includes('remix-serve') || cmd.includes('@remix-run')) {
         return 'Remix';
     }
-    // deps-based (specific → generic)
+    if (cmd.includes('nuxt')) {
+        return 'Nuxt';
+    }
+    if (cmd.includes('next')) {
+        return 'Next.js';
+    }
+    if (cmd.includes('vue-cli-service') || cmd.includes('@vue/cli')) {
+        return 'Vue';
+    }
+    if (cmd.includes('svelte-kit') || cmd.includes('@sveltejs')) {
+        return 'SvelteKit';
+    }
+    if (cmd.includes('vite')) {
+        return 'Vite';
+    }
+    if (cmd.includes('webpack')) {
+        return 'Webpack';
+    }
+    // deps-based (most accurate — specific → generic)
     if (deps.length > 0) {
         if (has('next')) {
             return 'Next.js';
@@ -197,13 +235,6 @@ function detectNodeFramework(cmd, deps) {
             return 'Webpack';
         }
     }
-    // cmd-based fallbacks
-    if (cmd.includes('vite')) {
-        return 'Vite';
-    }
-    if (cmd.includes('webpack')) {
-        return 'Webpack';
-    }
     return undefined;
 }
 // ─── Service identification ───────────────────────────────────────────────────
@@ -232,23 +263,26 @@ async function identifyService(processName, pid, isWindows) {
         return cached;
     }
     try {
-        const cmd = await getProcessCommand(pid, isWindows);
+        // rawCmd preserves original case — needed for filesystem path operations
+        const rawCmd = await getRawCommand(pid, isWindows);
+        const cmd = rawCmd.toLowerCase(); // lowercased for pattern matching only
         const nameLower = processName.toLowerCase();
         if (cmd.includes('node') || nameLower.includes('node')) {
-            let framework;
-            try {
-                const cwd = await getWorkingDir(pid, isWindows);
-                if (cwd) {
-                    const pkgInfo = await readPkgInfo(cwd);
-                    framework = detectNodeFramework(cmd, pkgInfo.deps);
-                    debugLog('PID %s cwd=%s deps=%d framework=%s', pid, cwd, pkgInfo.deps.length, framework);
-                }
-            }
-            catch (err) {
-                debugLog('readPkgInfo failed for PID %s: %o', pid, err);
-            }
+            // 1st pass: cmd-only detection (zero I/O)
+            let framework = detectNodeFramework(cmd, []);
             if (!framework) {
-                framework = detectNodeFramework(cmd, []);
+                try {
+                    // Use rawCmd (original case) for path extraction so cat/readFile works on macOS
+                    const cwd = extractProjectDirFromCmd(rawCmd) || await getWorkingDir(pid, isWindows);
+                    if (cwd) {
+                        const pkgInfo = await readPkgInfo(cwd);
+                        framework = detectNodeFramework(cmd, pkgInfo.deps);
+                        debugLog('PID %s cwd=%s deps=%d framework=%s', pid, cwd, pkgInfo.deps.length, framework);
+                    }
+                }
+                catch (err) {
+                    debugLog('readPkgInfo failed for PID %s: %o', pid, err);
+                }
             }
             const result = { framework, platform: 'Node.js' };
             setCachedService(pid, result);
@@ -1008,7 +1042,42 @@ class LocalhostPortsWebviewProvider {
         }
     }
 }
+// ─── What's New ───────────────────────────────────────────────────────────────
+const WHATS_NEW = {
+    '0.0.20': [
+        'Open source release — MIT license, CONTRIBUTING guide, CODE_OF_CONDUCT',
+        'Issue templates by OS (macOS, Linux, Windows) on GitHub',
+        'Improved Marketplace page: keywords, badges, full README rewrite',
+    ],
+    '0.0.19': [
+        'Framework detection via package.json (React, Next.js, Nuxt, Svelte, Astro, Remix…)',
+        'Copy port / Copy URL actions per row',
+        'Kill process with confirmation dialog',
+        'Search bar + quick filter tabs (Node / DB / Web / Other)',
+        'Favorites — pin ports to the top, persists across restarts',
+        'Loading, empty and error states',
+        'Native VS Code theme support (dark, light, high contrast)',
+        'Scroll position preserved between auto-refreshes',
+    ],
+};
+async function showWhatsNew(context) {
+    const current = context.extension.packageJSON.version;
+    const previous = context.globalState.get('version');
+    await context.globalState.update('version', current);
+    if (!previous || previous === current) {
+        return;
+    }
+    const notes = WHATS_NEW[current];
+    const summary = notes
+        ? notes.map(n => `• ${n}`).join('\n')
+        : `See the full changelog on GitHub.`;
+    const choice = await vscode.window.showInformationMessage(`Localhost Ports Viewer updated to v${current}`, { detail: summary, modal: false }, 'See changelog', 'Dismiss');
+    if (choice === 'See changelog') {
+        vscode.env.openExternal(vscode.Uri.parse('https://github.com/daniloagostinho/localhost-ports-viewer/blob/main/changelog.md'));
+    }
+}
 export function activate(context) {
+    showWhatsNew(context);
     const provider = new LocalhostPortsWebviewProvider(context);
     context.subscriptions.push(vscode.window.registerWebviewViewProvider('localhostPorts', provider));
 }

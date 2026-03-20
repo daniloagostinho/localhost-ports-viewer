@@ -4,7 +4,7 @@
   "publisher": "danilodevsilva",
   "description": "Monitor all localhost ports in real time. Detects Node, React, Next.js, databases and more — open, copy or kill any service directly from the VS Code sidebar.",
   "type": "module",
-  "version": "0.0.18",
+  "version": "0.0.20",
   "engines": {
     "vscode": "^1.100.0"
   },
