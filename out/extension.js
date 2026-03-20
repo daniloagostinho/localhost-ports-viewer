@@ -216,7 +216,7 @@ async function collectPortsWindows() {
         if (!portSet.has(port)) {
             portSet.add(port);
             const serviceInfo = await identifyService(procName, pid, true);
-            result.push({ port, process: serviceInfo.platform, framework: serviceInfo.framework });
+            result.push({ port, pid, process: serviceInfo.platform, framework: serviceInfo.framework });
         }
     }
     return result;
@@ -238,8 +238,9 @@ async function parseLsofLines(lines, isWindows) {
             continue;
         }
         portSet.add(port);
-        const serviceInfo = await identifyService(parts[0], parts[1], isWindows);
-        result.push({ port, process: serviceInfo.platform, framework: serviceInfo.framework });
+        const pid = parts[1];
+        const serviceInfo = await identifyService(parts[0], pid, isWindows);
+        result.push({ port, pid, process: serviceInfo.platform, framework: serviceInfo.framework });
     }
     return result;
 }
@@ -270,10 +271,10 @@ async function parseSsLines(lines) {
         const procName = nameMatch?.[1] ?? 'PORT IN USE';
         if (pid) {
             const serviceInfo = await identifyService(procName, pid, false);
-            result.push({ port, process: serviceInfo.platform, framework: serviceInfo.framework });
+            result.push({ port, pid, process: serviceInfo.platform, framework: serviceInfo.framework });
         }
         else {
-            result.push({ port, process: procName });
+            result.push({ port, pid: '', process: procName });
         }
     }
     return result;
@@ -314,7 +315,7 @@ async function collectPortsFallback() {
                 tcpPortUsed.check(port, '::1'),
             ]);
             if (v4 || v6) {
-                results.push({ port: port.toString(), process: info.platform, framework: info.framework });
+                results.push({ port: port.toString(), pid: '', process: info.platform, framework: info.framework });
             }
         }
         catch { }
@@ -344,173 +345,434 @@ async function getListeningPorts() {
     }
     return ports.sort((a, b) => parseInt(a.port) - parseInt(b.port));
 }
-// ─── Webview HTML ─────────────────────────────────────────────────────────────
-function getWebviewContent(ports) {
-    const nonce = generateNonce();
-    const rows = ports.map(p => {
-        const serviceClass = p.process.toLowerCase().replace(/[^a-z0-9]/g, '-');
-        const serviceDisplay = p.framework
-            ? `${escapeHtml(p.framework)} (${escapeHtml(p.process)})`
-            : escapeHtml(p.process);
-        const safePort = escapeHtml(p.port);
-        return `
-    <div class="row">
-      <div class="port-info">
-        <div class="port">${safePort}</div>
-        <div class="service ${serviceClass}">${serviceDisplay}</div>
-      </div>
-      <button class="open-btn" data-port="${safePort}">
-        <span class="arrow">→</span>
-        <span class="tooltip">Open in browser</span>
-      </button>
-    </div>`;
-    }).join('\n');
-    const emptyState = ports.length === 0
-        ? `<div class="empty-state">No active ports detected</div>`
-        : '';
+// ─── Kill process ─────────────────────────────────────────────────────────────
+async function killProcess(pid) {
+    const isWin = platform() === 'win32';
+    const cmd = isWin ? `taskkill /F /PID ${pid}` : `kill -9 ${pid}`;
+    await execWithTimeout(cmd, 5000);
+}
+// ─── Webview shell ────────────────────────────────────────────────────────────
+function getWebviewShell(nonce) {
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
+  <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      background-color: #1e1e1e;
-      color: #ccc;
-      font-family: system-ui, -apple-system, sans-serif;
-      padding: 16px;
+      background: var(--vscode-sideBar-background);
+      color: var(--vscode-sideBar-foreground, var(--vscode-foreground));
+      font-family: var(--vscode-font-family, system-ui, sans-serif);
+      font-size: var(--vscode-font-size, 13px);
+      padding: 8px 10px;
+      overflow-x: hidden;
     }
+    /* ── Header ── */
     .header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 20px;
-    }
-    .refresh-btn {
-      background-color: #2d2d2d;
-      color: #ccc;
-      border: 1px solid #3d3d3d;
-      border-radius: 4px;
-      padding: 4px 8px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      font-size: 12px;
-      transition: all 0.2s ease;
-    }
-    .refresh-btn:hover { background-color: #3d3d3d; color: white; }
-    .refresh-icon { font-size: 14px; }
-    .row {
       display: flex;
       align-items: center;
       justify-content: space-between;
       margin-bottom: 8px;
-      background: #252525;
-      padding: 8px 12px;
-      border-radius: 8px;
-      transition: all 0.2s ease;
     }
-    .row:hover { background: #2d2d2d; }
-    .port-info { display: flex; align-items: center; gap: 12px; }
-    .port {
-      background-color: #2ea043;
-      color: white;
-      font-weight: 600;
-      padding: 6px 12px;
-      border-radius: 6px;
-      font-size: 14px;
-      min-width: 50px;
-      text-align: center;
-    }
-    .service {
-      font-size: 12px;
-      font-weight: 500;
-      padding: 4px 8px;
-      border-radius: 4px;
+    .title {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.8px;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
+      opacity: 0.7;
+    }
+    .refresh-btn {
+      background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+      color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
+      border: 1px solid var(--vscode-button-border, transparent);
+      border-radius: 3px;
+      padding: 3px 8px;
+      cursor: pointer;
+      font-size: 11px;
+      font-family: var(--vscode-font-family);
       display: flex;
       align-items: center;
-      gap: 6px;
-      white-space: nowrap;
-      background: #333;
+      gap: 4px;
+      transition: background 0.15s;
     }
-    .angular    { background-color: #dd0031; color: white; }
-    .react      { background-color: #61dafb; color: black; }
-    .vue        { background-color: #42b883; color: white; }
-    .node-js    { background-color: #68a063; color: white; }
-    .postgresql { background-color: #336791; color: white; }
-    .mysql      { background-color: #00758f; color: white; }
-    .mongodb    { background-color: #4db33d; color: white; }
-    .redis      { background-color: #d82c20; color: white; }
-    .java       { background-color: #007396; color: white; }
-    .python     { background-color: #3776ab; color: white; }
-    .php        { background-color: #777bb3; color: white; }
-    .port-in-use { background-color: #6e7681; color: white; }
-    .open-btn {
+    .refresh-btn:hover {
+      background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-hoverBackground));
+    }
+    .refresh-icon { display: inline-block; }
+    .refresh-btn.loading .refresh-icon { animation: spin 0.7s linear infinite; }
+    /* ── Search ── */
+    .search-wrap { margin-bottom: 6px; }
+    .search-input {
+      width: 100%;
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      border: 1px solid var(--vscode-input-border, transparent);
+      border-radius: 3px;
+      padding: 4px 8px;
+      font-size: 12px;
+      font-family: var(--vscode-font-family);
+      outline: none;
+    }
+    .search-input:focus { border-color: var(--vscode-focusBorder); }
+    .search-input::placeholder {
+      color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground));
+    }
+    /* ── Filter tabs ── */
+    .filter-tabs {
+      display: flex;
+      margin-bottom: 8px;
+      border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, rgba(128,128,128,0.2)));
+    }
+    .filter-tab {
       background: none;
       border: none;
-      color: #ccc;
-      font-size: 18px;
+      border-bottom: 2px solid transparent;
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+      font-family: var(--vscode-font-family);
+      padding: 3px 8px;
+      margin-bottom: -1px;
       cursor: pointer;
-      padding: 6px;
-      position: relative;
+      transition: color 0.15s;
+    }
+    .filter-tab:hover { color: var(--vscode-foreground); }
+    .filter-tab.active {
+      color: var(--vscode-foreground);
+      border-bottom-color: var(--vscode-focusBorder);
+    }
+    /* ── Port list ── */
+    #port-list { display: flex; flex-direction: column; gap: 4px; }
+    /* ── Row ── */
+    .row {
       display: flex;
       align-items: center;
-      justify-content: center;
-      width: 32px;
-      height: 32px;
+      justify-content: space-between;
+      padding: 5px 6px;
       border-radius: 4px;
-      transition: all 0.2s ease;
+      transition: background 0.1s;
+      gap: 4px;
     }
-    .open-btn:hover { background-color: #3d3d3d; color: white; }
-    .open-btn .arrow { transition: transform 0.2s ease; }
-    .open-btn:hover .arrow { transform: translateX(2px); }
-    .tooltip {
-      position: absolute;
-      background: #3d3d3d;
-      padding: 4px 8px;
+    .row:hover { background: var(--vscode-list-hoverBackground); }
+    .row:hover .actions { visibility: visible; }
+    .port-info { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; }
+    .port {
+      background: #2ea043;
+      color: #fff;
+      font-weight: 700;
+      padding: 3px 8px;
       border-radius: 4px;
       font-size: 12px;
-      white-space: nowrap;
-      right: 100%;
-      margin-right: 8px;
-      opacity: 0;
-      visibility: hidden;
-      transition: all 0.2s ease;
-    }
-    .open-btn:hover .tooltip { opacity: 1; visibility: visible; }
-    .empty-state {
-      color: #666;
+      min-width: 48px;
       text-align: center;
-      padding: 32px 0;
-      font-size: 13px;
+      flex-shrink: 0;
+    }
+    .row.is-favorite .port { background: #d4a017; }
+    .service {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 6px;
+      border-radius: 3px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 145px;
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+      outline: 1px solid var(--vscode-contrastBorder, transparent);
+    }
+    .s-angular    { background: #dd0031 !important; color: #fff !important; }
+    .s-react      { background: #20232a !important; color: #61dafb !important; }
+    .s-vue        { background: #42b883 !important; color: #fff !important; }
+    .s-node-js    { background: #68a063 !important; color: #fff !important; }
+    .s-postgresql { background: #336791 !important; color: #fff !important; }
+    .s-mysql      { background: #00758f !important; color: #fff !important; }
+    .s-mongodb    { background: #4db33d !important; color: #fff !important; }
+    .s-redis      { background: #d82c20 !important; color: #fff !important; }
+    .s-java       { background: #007396 !important; color: #fff !important; }
+    .s-python     { background: #3776ab !important; color: #fff !important; }
+    .s-php        { background: #777bb3 !important; color: #fff !important; }
+    /* ── Actions ── */
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 1px;
+      flex-shrink: 0;
+      visibility: hidden;
+    }
+    .action-btn {
+      background: none;
+      border: none;
+      color: var(--vscode-icon-foreground, var(--vscode-foreground));
+      cursor: pointer;
+      padding: 3px 4px;
+      border-radius: 3px;
+      font-size: 12px;
+      line-height: 1;
+      opacity: 0.75;
+      transition: background 0.1s, opacity 0.1s;
+    }
+    .action-btn:hover {
+      background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.2));
+      opacity: 1;
+    }
+    .fav-btn {
+      visibility: visible;
+      opacity: 0.3;
+      font-size: 14px;
+      padding: 2px 3px;
+      flex-shrink: 0;
+    }
+    .fav-btn.active { opacity: 1; color: #d4a017; }
+    .row:hover .fav-btn { opacity: 0.6; }
+    .row:hover .fav-btn.active { opacity: 1; }
+    .kill-btn:hover { color: var(--vscode-errorForeground, #f55); opacity: 1; }
+    /* ── States ── */
+    .state-box {
+      text-align: center;
+      padding: 28px 16px;
+      color: var(--vscode-descriptionForeground);
+      font-size: 12px;
+      display: none;
+    }
+    .state-box.visible { display: block; }
+    .state-box .state-detail { margin-top: 6px; opacity: 0.7; font-size: 11px; word-break: break-word; }
+    .retry-btn {
+      margin-top: 10px;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: none;
+      border-radius: 3px;
+      padding: 4px 14px;
+      font-size: 12px;
+      font-family: var(--vscode-font-family);
+      cursor: pointer;
+    }
+    .retry-btn:hover { background: var(--vscode-button-hoverBackground); }
+    /* ── Loading overlay ── */
+    #loading-overlay {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: var(--vscode-sideBar-background);
+      opacity: 0.88;
+    }
+    #loading-overlay.visible { display: flex; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner {
+      width: 18px;
+      height: 18px;
+      border: 2px solid var(--vscode-focusBorder, #007fd4);
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
     }
   </style>
 </head>
 <body>
   <div class="header">
-    <h3>ACTIVE PORTS</h3>
+    <span class="title">Active Ports</span>
     <button class="refresh-btn" id="refresh-btn">
-      <span class="refresh-icon">↻</span>
-      Synchronize
+      <span class="refresh-icon">↻</span> Synchronize
     </button>
   </div>
-  ${rows}
-  ${emptyState}
-  <script nonce="${nonce}">
-    const vscode = acquireVsCodeApi();
 
-    document.getElementById('refresh-btn').addEventListener('click', () => {
+  <div class="search-wrap">
+    <input class="search-input" id="search-input" type="text" placeholder="Filter by port or service…">
+  </div>
+
+  <div class="filter-tabs">
+    <button class="filter-tab active" data-cat="all">All</button>
+    <button class="filter-tab" data-cat="node">Node</button>
+    <button class="filter-tab" data-cat="db">DB</button>
+    <button class="filter-tab" data-cat="web">Web</button>
+    <button class="filter-tab" data-cat="other">Other</button>
+  </div>
+
+  <div id="port-list"></div>
+
+  <div class="state-box" id="empty-state">
+    <div>No active ports detected</div>
+    <button class="retry-btn" id="empty-retry">Refresh</button>
+  </div>
+
+  <div class="state-box" id="error-state">
+    <div>Failed to detect ports</div>
+    <p class="state-detail" id="error-detail"></p>
+    <button class="retry-btn" id="error-retry">Try again</button>
+  </div>
+
+  <div id="loading-overlay" class="visible">
+    <div class="spinner"></div>
+  </div>
+
+  <script nonce="${nonce}">
+    var vscode = acquireVsCodeApi();
+    var allPorts = [];
+    var favorites = [];
+    var activeFilter = 'all';
+    var searchQuery = '';
+    var hasLoaded = false;
+
+    var DB_NAMES   = ['postgresql', 'mysql', 'mongodb', 'redis', 'mariadb', 'cassandra', 'sqlite'];
+    var NODE_NAMES = ['node.js', 'angular', 'react', 'vue', 'next', 'vite', 'express', 'nestjs', 'nuxt', 'svelte', 'remix'];
+    var WEB_NAMES  = ['python', 'php', 'java', 'nginx', 'apache', 'spring', 'rails', 'django', 'flask', 'fastapi', 'ruby'];
+
+    function getCategory(procName) {
+      var p = (procName || '').toLowerCase();
+      if (DB_NAMES.some(function(n) { return p.indexOf(n) !== -1; }))   return 'db';
+      if (NODE_NAMES.some(function(n) { return p.indexOf(n) !== -1; })) return 'node';
+      if (WEB_NAMES.some(function(n) { return p.indexOf(n) !== -1; }))  return 'web';
+      return 'other';
+    }
+
+    function getServiceClass(name) {
+      return 's-' + (name || '').toLowerCase().replace(/[^a-z0-9]/g, '-');
+    }
+
+    function buildRowHtml(p) {
+      var isFav = favorites.indexOf(p.port) !== -1;
+      var svcDisplay = p.framework ? (p.framework + ' (' + p.process + ')') : p.process;
+      var svcClass = getServiceClass(p.process);
+      var pid = p.pid || '';
+      var killHtml = pid
+        ? '<button class="action-btn kill-btn" title="Stop process" data-action="kill">&#x2715;</button>'
+        : '';
+      return '<div class="row' + (isFav ? ' is-favorite' : '') + '"' +
+               ' data-port="' + p.port + '"' +
+               ' data-pid="' + pid + '"' +
+               ' data-proc="' + (p.process || '').toLowerCase() + '">' +
+               '<button class="action-btn fav-btn' + (isFav ? ' active' : '') + '"' +
+                 ' title="' + (isFav ? 'Remove favorite' : 'Add to favorites') + '"' +
+                 ' data-action="fav">&#x2605;</button>' +
+               '<div class="port-info">' +
+                 '<div class="port">' + p.port + '</div>' +
+                 '<div class="service ' + svcClass + '">' + svcDisplay + '</div>' +
+               '</div>' +
+               '<div class="actions">' +
+                 '<button class="action-btn" title="Copy port" data-action="copyPort">&#x2398;</button>' +
+                 '<button class="action-btn" title="Copy URL" data-action="copyUrl">&#x1F517;</button>' +
+                 '<button class="action-btn" title="Open in browser" data-action="open">&#x2197;</button>' +
+                 killHtml +
+               '</div>' +
+             '</div>';
+    }
+
+    function applyFilter() {
+      var q = searchQuery.toLowerCase();
+      var rows = document.querySelectorAll('#port-list .row');
+      var visibleCount = 0;
+      rows.forEach(function(row) {
+        var port = row.dataset.port || '';
+        var proc = row.dataset.proc || '';
+        var text = port + ' ' + proc;
+        var matchSearch = !q || text.indexOf(q) !== -1;
+        var cat = getCategory(proc);
+        var matchCat = activeFilter === 'all' || cat === activeFilter;
+        var show = matchSearch && matchCat;
+        row.style.display = show ? '' : 'none';
+        if (show) { visibleCount++; }
+      });
+      var emptyEl = document.getElementById('empty-state');
+      emptyEl.classList.toggle('visible', hasLoaded && visibleCount === 0 && !document.getElementById('error-state').classList.contains('visible'));
+    }
+
+    function renderPorts() {
+      var list = document.getElementById('port-list');
+      var scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
+      // Sort: favorites first, then by port number
+      var sorted = allPorts.slice().sort(function(a, b) {
+        var aFav = favorites.indexOf(a.port) !== -1 ? 0 : 1;
+        var bFav = favorites.indexOf(b.port) !== -1 ? 0 : 1;
+        if (aFav !== bFav) { return aFav - bFav; }
+        return parseInt(a.port) - parseInt(b.port);
+      });
+      list.innerHTML = sorted.map(buildRowHtml).join('');
+      document.documentElement.scrollTop = scrollTop;
+      document.body.scrollTop = scrollTop;
+      applyFilter();
+    }
+
+    // Event delegation
+    document.getElementById('port-list').addEventListener('click', function(e) {
+      var btn = e.target.closest('[data-action]');
+      var row = e.target.closest('.row');
+      if (!btn || !row) { return; }
+      var port = row.dataset.port;
+      var pid  = row.dataset.pid;
+      var action = btn.dataset.action;
+      if (action === 'open')     { vscode.postMessage({ command: 'open', port: port }); }
+      if (action === 'copyUrl')  { vscode.postMessage({ command: 'copyUrl', port: port }); }
+      if (action === 'copyPort') { vscode.postMessage({ command: 'copyPort', port: port }); }
+      if (action === 'kill')     { vscode.postMessage({ command: 'killPort', port: port, pid: pid }); }
+      if (action === 'fav')      { vscode.postMessage({ command: 'toggleFavorite', port: port }); }
+    });
+
+    // Messages from extension host
+    window.addEventListener('message', function(e) {
+      var msg = e.data;
+      if (msg.command === 'updatePorts') {
+        hasLoaded = true;
+        document.getElementById('loading-overlay').classList.remove('visible');
+        document.getElementById('refresh-btn').classList.remove('loading');
+        if (msg.error) {
+          document.getElementById('error-detail').textContent = msg.error;
+          document.getElementById('error-state').classList.add('visible');
+          document.getElementById('empty-state').classList.remove('visible');
+          document.getElementById('port-list').innerHTML = '';
+        } else {
+          document.getElementById('error-state').classList.remove('visible');
+          allPorts = msg.ports || [];
+          favorites = msg.favorites || [];
+          renderPorts();
+        }
+      } else if (msg.command === 'setLoading') {
+        document.getElementById('loading-overlay').classList.toggle('visible', !!msg.loading);
+        document.getElementById('refresh-btn').classList.toggle('loading', !!msg.loading);
+      } else if (msg.command === 'copyFeedback') {
+        var row = document.querySelector('.row[data-port="' + msg.port + '"]');
+        if (!row) { return; }
+        row.querySelectorAll('[data-action="copyPort"], [data-action="copyUrl"]').forEach(function(btn) {
+          var orig = btn.innerHTML;
+          btn.innerHTML = '&#x2713;';
+          setTimeout(function() { btn.innerHTML = orig; }, 1500);
+        });
+      }
+    });
+
+    // Search
+    document.getElementById('search-input').addEventListener('input', function(e) {
+      searchQuery = e.target.value;
+      applyFilter();
+    });
+
+    // Quick filter tabs
+    document.querySelectorAll('.filter-tab').forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        activeFilter = tab.dataset.cat;
+        document.querySelectorAll('.filter-tab').forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        applyFilter();
+      });
+    });
+
+    // Refresh
+    document.getElementById('refresh-btn').addEventListener('click', function() {
       vscode.postMessage({ command: 'refresh' });
     });
 
-    document.querySelectorAll('.open-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const port = btn.getAttribute('data-port');
-        if (port) { vscode.postMessage({ command: 'open', port }); }
-      });
+    // Retry buttons
+    document.getElementById('empty-retry').addEventListener('click', function() {
+      vscode.postMessage({ command: 'refresh' });
+    });
+    document.getElementById('error-retry').addEventListener('click', function() {
+      document.getElementById('error-state').classList.remove('visible');
+      vscode.postMessage({ command: 'refresh' });
     });
   </script>
 </body>
@@ -518,35 +780,104 @@ function getWebviewContent(ports) {
 }
 // ─── Extension ────────────────────────────────────────────────────────────────
 class LocalhostPortsWebviewProvider {
+    _context;
     _view;
     _refreshInterval;
     _isRefreshing = false;
+    _lastPorts = [];
+    constructor(_context) {
+        this._context = _context;
+    }
     async resolveWebviewView(webviewView) {
         this._view = webviewView;
         webviewView.webview.options = { enableScripts: true };
+        webviewView.webview.html = getWebviewShell(generateNonce());
         this.startAutoRefresh();
-        await this.updateContent();
+        await this.refreshPorts();
         webviewView.onDidDispose(() => this.stopAutoRefresh());
-        webviewView.webview.onDidReceiveMessage(msg => {
-            switch (msg.command) {
-                case 'open': {
-                    if (!isValidPort(msg.port)) {
-                        debugLog('Rejected invalid port value: %s', msg.port);
-                        return;
-                    }
-                    vscode.env.openExternal(vscode.Uri.parse(`http://localhost:${msg.port}`));
-                    break;
+        webviewView.webview.onDidReceiveMessage(msg => this.handleMessage(msg));
+    }
+    getFavorites() {
+        return this._context.globalState.get('favorites', []);
+    }
+    async setFavorites(ports) {
+        await this._context.globalState.update('favorites', ports);
+    }
+    async handleMessage(msg) {
+        switch (msg.command) {
+            case 'open': {
+                if (!isValidPort(msg.port)) {
+                    return;
                 }
-                case 'refresh':
-                    this.updateContent();
-                    break;
+                const url = `http://localhost:${msg.port}`;
+                const target = getConfig().get('openBrowserTarget', 'external');
+                if (target === 'internal') {
+                    try {
+                        await vscode.commands.executeCommand('simpleBrowser.show', url);
+                    }
+                    catch {
+                        await vscode.env.openExternal(vscode.Uri.parse(url));
+                    }
+                }
+                else {
+                    await vscode.env.openExternal(vscode.Uri.parse(url));
+                }
+                break;
             }
-        });
+            case 'copyUrl':
+                if (!isValidPort(msg.port)) {
+                    return;
+                }
+                await vscode.env.clipboard.writeText(`http://localhost:${msg.port}`);
+                this._view?.webview.postMessage({ command: 'copyFeedback', port: msg.port });
+                break;
+            case 'copyPort':
+                if (!isValidPort(msg.port)) {
+                    return;
+                }
+                await vscode.env.clipboard.writeText(msg.port);
+                this._view?.webview.postMessage({ command: 'copyFeedback', port: msg.port });
+                break;
+            case 'killPort': {
+                if (!msg.pid) {
+                    return;
+                }
+                const answer = await vscode.window.showWarningMessage(`Kill process on port ${msg.port}?`, { modal: true }, 'Terminate');
+                if (answer !== 'Terminate') {
+                    return;
+                }
+                try {
+                    await killProcess(msg.pid);
+                    await this.refreshPorts();
+                }
+                catch (err) {
+                    vscode.window.showErrorMessage(`Failed to kill process: ${String(err)}`);
+                }
+                break;
+            }
+            case 'toggleFavorite': {
+                const favs = this.getFavorites();
+                const newFavs = favs.includes(msg.port)
+                    ? favs.filter(p => p !== msg.port)
+                    : [...favs, msg.port];
+                await this.setFavorites(newFavs);
+                this._view?.webview.postMessage({
+                    command: 'updatePorts',
+                    ports: this._lastPorts,
+                    favorites: newFavs,
+                    error: null,
+                });
+                break;
+            }
+            case 'refresh':
+                await this.refreshPorts();
+                break;
+        }
     }
     startAutoRefresh() {
         this.stopAutoRefresh();
         const interval = getConfig().get('refreshInterval', 5000);
-        this._refreshInterval = setInterval(() => this.updateContent(), interval);
+        this._refreshInterval = setInterval(() => this.refreshPorts(), interval);
     }
     stopAutoRefresh() {
         if (this._refreshInterval) {
@@ -554,19 +885,34 @@ class LocalhostPortsWebviewProvider {
             this._refreshInterval = undefined;
         }
     }
-    async updateContent() {
+    async refreshPorts() {
         if (this._isRefreshing || !this._view) {
             return;
         }
         this._isRefreshing = true;
+        this._view.webview.postMessage({ command: 'setLoading', loading: true });
         try {
             const ports = await getListeningPorts();
+            this._lastPorts = ports;
             if (this._view) {
-                this._view.webview.html = getWebviewContent(ports);
+                this._view.webview.postMessage({
+                    command: 'updatePorts',
+                    ports,
+                    favorites: this.getFavorites(),
+                    error: null,
+                });
             }
         }
         catch (err) {
-            debugLog('updateContent error: %o', err);
+            debugLog('refreshPorts error: %o', err);
+            if (this._view) {
+                this._view.webview.postMessage({
+                    command: 'updatePorts',
+                    ports: [],
+                    favorites: this.getFavorites(),
+                    error: String(err),
+                });
+            }
         }
         finally {
             this._isRefreshing = false;
@@ -574,7 +920,7 @@ class LocalhostPortsWebviewProvider {
     }
 }
 export function activate(context) {
-    const provider = new LocalhostPortsWebviewProvider();
+    const provider = new LocalhostPortsWebviewProvider(context);
     context.subscriptions.push(vscode.window.registerWebviewViewProvider('localhostPorts', provider));
 }
 export function deactivate() { }

@@ -13,9 +13,7 @@
   ],
   "icon": "icon.png",
   "main": "./out/extension.js",
-  "activationEvents": [
-    "onView:localhostPorts"
-  ],
+  "activationEvents": [],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -55,6 +53,16 @@
           "type": "boolean",
           "default": false,
           "description": "Enable verbose debug logs in the Output channel."
+        },
+        "localhostPortsViewer.openBrowserTarget": {
+          "type": "string",
+          "enum": ["external", "internal"],
+          "enumDescriptions": [
+            "Open in the system default browser",
+            "Open in VS Code's Simple Browser"
+          ],
+          "default": "external",
+          "description": "Where to open localhost URLs when clicking a port."
         }
       }
     }
