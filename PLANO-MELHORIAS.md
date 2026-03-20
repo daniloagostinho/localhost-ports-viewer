@@ -90,20 +90,20 @@ Melhorar confiabilidade cross-OS (Windows/macOS/Linux), experiencia de uso no VS
 ## Fase 3 - Marketplace Growth (Mais downloads)
 
 ### 6. Otimizacao da pagina da extensao
-- [ ] Corrigir `repository.url` real no `package.json`
-- [ ] Ajustar categoria(s) da extensao (evitar apenas `Other`)
-- [ ] Adicionar `keywords` focadas em busca (localhost, ports, dev server, etc.)
-- [ ] Corrigir consistencia de publisher/nome no README
-- [ ] Atualizar badge de versao no README
-- [ ] Incluir GIF curto de demonstracao (5-10s)
-- [ ] Atualizar screenshots reais da UX atual
-- [ ] Melhorar descricao com proposta de valor clara no primeiro bloco
+- [x] Corrigir `repository.url` real no `package.json`
+- [x] Ajustar categoria(s) da extensao (evitar apenas `Other`)
+- [x] Adicionar `keywords` focadas em busca (localhost, ports, dev server, etc.)
+- [x] Corrigir consistencia de publisher/nome no README
+- [x] Atualizar badge de versao no README
+- [ ] Incluir GIF curto de demonstracao (5-10s) — pendente: gravar manualmente
+- [ ] Atualizar screenshots reais da UX atual — pendente: capturar manualmente
+- [x] Melhorar descricao com proposta de valor clara no primeiro bloco
 
 ### 7. Confianca e prova social
-- [ ] Organizar CHANGELOG por versao (padrao Keep a Changelog)
-- [ ] Criar issue templates por OS
-- [ ] Criar release notes mais detalhadas por versao
-- [ ] Adicionar CTA discreto para review apos usos bem-sucedidos
+- [x] Organizar CHANGELOG por versao (padrao Keep a Changelog)
+- [x] Criar issue templates por OS (macOS, Linux, Windows, feature request)
+- [x] Criar release notes mais detalhadas por versao
+- [x] Adicionar CTA discreto para review apos usos bem-sucedidos (no README)
 - [ ] Telemetria opcional e anonima (se decidir usar)
 
 ---

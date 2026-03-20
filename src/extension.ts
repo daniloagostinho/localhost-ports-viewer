@@ -1,3 +1,5 @@
+// Copyright (c) 2024 Danilo Silva (daniloagostinho)
+// Licensed under the MIT License. See LICENSE in the project root.
 // VS Code extension: Localhost Ports Viewer
 
 import { exec } from 'child_process';
