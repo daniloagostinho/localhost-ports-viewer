@@ -6,6 +6,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.0.20] — 2026-03-20
+
+### Changed
+- Open source release: added LICENSE (MIT), CONTRIBUTING.md, CODE_OF_CONDUCT.md, GitHub issue templates
+- Improved Marketplace page: keywords, categories, badges, full README rewrite
+
+---
+
+## [0.0.19] — 2026-03-20
+
+### Added
+- **What's New notification** — shows a summary of changes automatically when the extension is updated, with a link to the full changelog
+
+---
+
 ## [0.0.18] — 2026-03-20
 
 ### Added

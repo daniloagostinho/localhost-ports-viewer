@@ -1014,7 +1014,56 @@ class LocalhostPortsWebviewProvider implements vscode.WebviewViewProvider {
   }
 }
 
+// ─── What's New ───────────────────────────────────────────────────────────────
+
+const WHATS_NEW: Record<string, string[]> = {
+  '0.0.20': [
+    'Open source release — MIT license, CONTRIBUTING guide, CODE_OF_CONDUCT',
+    'Issue templates by OS (macOS, Linux, Windows) on GitHub',
+    'Improved Marketplace page: keywords, badges, full README rewrite',
+  ],
+  '0.0.19': [
+    'Framework detection via package.json (React, Next.js, Nuxt, Svelte, Astro, Remix…)',
+    'Copy port / Copy URL actions per row',
+    'Kill process with confirmation dialog',
+    'Search bar + quick filter tabs (Node / DB / Web / Other)',
+    'Favorites — pin ports to the top, persists across restarts',
+    'Loading, empty and error states',
+    'Native VS Code theme support (dark, light, high contrast)',
+    'Scroll position preserved between auto-refreshes',
+  ],
+};
+
+async function showWhatsNew(context: vscode.ExtensionContext): Promise<void> {
+  const current  = context.extension.packageJSON.version as string;
+  const previous = context.globalState.get<string>('version');
+
+  await context.globalState.update('version', current);
+
+  if (!previous || previous === current) { return; }
+
+  const notes = WHATS_NEW[current];
+  const summary = notes
+    ? notes.map(n => `• ${n}`).join('\n')
+    : `See the full changelog on GitHub.`;
+
+  const choice = await vscode.window.showInformationMessage(
+    `Localhost Ports Viewer updated to v${current}`,
+    { detail: summary, modal: false },
+    'See changelog',
+    'Dismiss'
+  );
+
+  if (choice === 'See changelog') {
+    vscode.env.openExternal(
+      vscode.Uri.parse('https://github.com/daniloagostinho/localhost-ports-viewer/blob/main/changelog.md')
+    );
+  }
+}
+
 export function activate(context: vscode.ExtensionContext) {
+  showWhatsNew(context);
+
   const provider = new LocalhostPortsWebviewProvider(context);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('localhostPorts', provider)
