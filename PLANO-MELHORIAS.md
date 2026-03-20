@@ -69,21 +69,21 @@ Melhorar confiabilidade cross-OS (Windows/macOS/Linux), experiencia de uso no VS
 ## Fase 2 - UX/UI (Aparencia + Comportamento)
 
 ### 4. Interface nativa VS Code
-- [ ] Migrar cores para tokens de tema VS Code
-- [ ] Compatibilidade com tema claro/escuro/alto contraste
-- [ ] Estado de loading durante atualizacao
-- [ ] Estado vazio (nenhuma porta ativa)
-- [ ] Estado de erro amigavel com acao de retry
+- [x] Migrar cores para tokens de tema VS Code
+- [x] Compatibilidade com tema claro/escuro/alto contraste
+- [x] Estado de loading durante atualizacao
+- [x] Estado vazio (nenhuma porta ativa)
+- [x] Estado de erro amigavel com acao de retry
 
 ### 5. Interacoes e produtividade
-- [ ] Acao para copiar URL
-- [ ] Acao para copiar apenas a porta
-- [ ] Acao para abrir no browser interno/externo (configuravel)
-- [ ] Acao para encerrar processo com confirmacao
-- [ ] Busca/filtro por nome de servico/framework/porta
-- [ ] Filtro rapido (Node, bancos, web servers, outros)
-- [ ] Favoritar portas
-- [ ] Preservar scroll/estado visual entre refreshes
+- [x] Acao para copiar URL
+- [x] Acao para copiar apenas a porta
+- [x] Acao para abrir no browser interno/externo (configuravel)
+- [x] Acao para encerrar processo com confirmacao
+- [x] Busca/filtro por nome de servico/framework/porta
+- [x] Filtro rapido (Node, bancos, web servers, outros)
+- [x] Favoritar portas
+- [x] Preservar scroll/estado visual entre refreshes
 
 ---
 
@@ -111,13 +111,15 @@ Melhorar confiabilidade cross-OS (Windows/macOS/Linux), experiencia de uso no VS
 ## Fase 4 - Ecossistema e diferenciacao
 
 ### 8. Deteccao de frameworks/servicos (expansao)
-- [ ] Melhorar deteccao de Next.js
-- [ ] Melhorar deteccao de Nuxt
-- [ ] Melhorar deteccao de Vite
-- [ ] Melhorar deteccao de Spring Boot
-- [ ] Melhorar deteccao de Laravel
-- [ ] Melhorar deteccao de Rails
-- [ ] Melhorar deteccao de apps Go
+- [x] Melhorar deteccao de Next.js
+- [x] Melhorar deteccao de Nuxt
+- [x] Melhorar deteccao de Vite
+- [x] Melhorar deteccao de Spring Boot
+- [x] Melhorar deteccao de Laravel
+- [x] Melhorar deteccao de Rails
+- [x] Melhorar deteccao de apps Go
+- [x] Substituir ls node_modules por leitura de package.json (mais rapido e preciso)
+- [x] Adicionar deteccao de: Remix, Svelte, Fastify, Hono, Elysia, Nginx, Apache
 
 ### 9. Ambientes de desenvolvimento
 - [ ] Validar comportamento em WSL

@@ -22,14 +22,6 @@ async function execWithTimeout(cmd, timeoutMs) {
     return Promise.race([run, timeout]);
 }
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
-function escapeHtml(str) {
-    return str
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#x27;');
-}
 function generateNonce() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     return Array.from({ length: 32 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
@@ -77,83 +69,160 @@ async function getProcessCommandUnix(pid) {
         return (await execWithTimeout(`ps aux | grep ${pid} | grep -v grep`)).toLowerCase();
     }
     catch { }
-    try {
-        const [cmdline, environ] = await Promise.all([
-            execWithTimeout(`cat /proc/${pid}/cmdline`),
-            execWithTimeout(`cat /proc/${pid}/environ`),
-        ]);
-        return `${cmdline} ${environ}`.toLowerCase();
-    }
-    catch { }
     return '';
 }
 async function getProcessCommand(pid, isWindows) {
     return isWindows ? getProcessCommandWindows(pid) : getProcessCommandUnix(pid);
 }
-// ─── Node modules detection ───────────────────────────────────────────────────
-async function getNodeModulesWindows(pid) {
+// ─── Working directory ────────────────────────────────────────────────────────
+async function getWorkingDirUnix(pid) {
     try {
-        const ps = `powershell -NoProfile -Command "(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).Path"`;
-        const exePath = (await execWithTimeout(ps)).trim();
-        if (exePath) {
-            const dir = exePath.substring(0, exePath.lastIndexOf('\\'));
-            const modules = await execWithTimeout(`dir "${dir}\\node_modules" /b`);
-            return modules.split('\n').map(m => m.trim().toLowerCase()).filter(Boolean);
+        const out = await execWithTimeout(`lsof -p ${pid} 2>/dev/null | grep cwd`);
+        const parts = out.trim().split(/\s+/);
+        if (parts.length >= 9) {
+            return parts.slice(8).join(' ');
         }
     }
     catch { }
-    return [];
-}
-async function getNodeModulesUnix(pid) {
     try {
-        const pwdOutput = await execWithTimeout(`lsof -p ${pid} | grep cwd`);
-        const workingDir = pwdOutput.split(/\s+/)[8];
-        if (workingDir) {
-            const modules = await execWithTimeout(`ls ${workingDir}/node_modules`);
-            return modules.split('\n').map(m => m.trim().toLowerCase()).filter(Boolean);
-        }
+        return (await execWithTimeout(`readlink /proc/${pid}/cwd`)).trim();
     }
     catch { }
-    return [];
+    return '';
 }
-async function getNodeModules(pid, isWindows) {
-    return isWindows ? getNodeModulesWindows(pid) : getNodeModulesUnix(pid);
+async function getWorkingDirWindows(pid) {
+    try {
+        const ps = `powershell -NoProfile -Command "Split-Path (Get-Process -Id ${pid} -ErrorAction SilentlyContinue).Path"`;
+        return (await execWithTimeout(ps)).trim();
+    }
+    catch { }
+    return '';
+}
+function getWorkingDir(pid, isWindows) {
+    return isWindows ? getWorkingDirWindows(pid) : getWorkingDirUnix(pid);
+}
+async function readPkgInfo(cwd) {
+    try {
+        const raw = await execWithTimeout(`cat "${cwd}/package.json"`);
+        const pkg = JSON.parse(raw);
+        return {
+            deps: [
+                ...Object.keys(pkg.dependencies || {}),
+                ...Object.keys(pkg.devDependencies || {}),
+            ],
+        };
+    }
+    catch {
+        return { deps: [] };
+    }
+}
+// ─── Node.js framework detector ───────────────────────────────────────────────
+function detectNodeFramework(cmd, deps) {
+    const has = (d) => deps.includes(d);
+    // cmd-based fast checks
+    if (cmd.includes('react-scripts')) {
+        return 'React';
+    }
+    if (cmd.includes('ng serve') || cmd.includes('@angular/cli')) {
+        return 'Angular';
+    }
+    if (cmd.includes('nest start') || cmd.includes('@nestjs')) {
+        return 'NestJS';
+    }
+    if (cmd.includes('astro')) {
+        return 'Astro';
+    }
+    if (cmd.includes('remix-serve') || cmd.includes('@remix-run')) {
+        return 'Remix';
+    }
+    // deps-based (specific → generic)
+    if (deps.length > 0) {
+        if (has('next')) {
+            return 'Next.js';
+        }
+        if (has('nuxt') || has('@nuxt/core')) {
+            return 'Nuxt';
+        }
+        if (has('@angular/core')) {
+            return 'Angular';
+        }
+        if (has('@sveltejs/kit')) {
+            return 'SvelteKit';
+        }
+        if (has('svelte')) {
+            return 'Svelte';
+        }
+        if (has('@remix-run/node')) {
+            return 'Remix';
+        }
+        if (has('astro')) {
+            return 'Astro';
+        }
+        if (has('@nestjs/core')) {
+            return 'NestJS';
+        }
+        if (has('@nrwl/workspace') || has('@nrwl/cli')) {
+            return 'Nx';
+        }
+        if (has('react-dom') || has('react')) {
+            return 'React';
+        }
+        if (has('vue')) {
+            return 'Vue';
+        }
+        if (has('elysia')) {
+            return 'Elysia';
+        }
+        if (has('hono')) {
+            return 'Hono';
+        }
+        if (has('fastify')) {
+            return 'Fastify';
+        }
+        if (has('express')) {
+            return 'Express';
+        }
+        if (has('koa')) {
+            return 'Koa';
+        }
+        if (has('@hapi/hapi') || has('hapi')) {
+            return 'Hapi';
+        }
+        if (has('vite')) {
+            return 'Vite';
+        }
+        if (has('webpack') || has('webpack-dev-server')) {
+            return 'Webpack';
+        }
+    }
+    // cmd-based fallbacks
+    if (cmd.includes('vite')) {
+        return 'Vite';
+    }
+    if (cmd.includes('webpack')) {
+        return 'Webpack';
+    }
+    return undefined;
 }
 // ─── Service identification ───────────────────────────────────────────────────
-const FRAMEWORK_PATTERNS = {
-    Angular: {
-        cmd: ['ng serve', '@angular/cli', '@angular-devkit', 'angular.json'],
-        modules: ['@angular/core', '@angular/cli', '@angular-devkit'],
-    },
-    React: {
-        cmd: ['react-scripts', 'create-react-app', 'next dev', 'vite'],
-        modules: ['react', 'react-dom', 'react-scripts', 'next', '@vitejs'],
-    },
-    Vue: {
-        cmd: ['vue-cli-service', '@vue/cli', 'nuxt'],
-        modules: ['vue', '@vue/cli-service', 'nuxt'],
-    },
-    Nx: {
-        cmd: ['nx serve', '@nrwl/cli'],
-        modules: ['@nrwl/workspace', '@nrwl/cli'],
-    },
-    Express: {
-        cmd: ['express', 'node server'],
-        modules: ['express'],
-    },
-    NestJS: {
-        cmd: ['nest start', '@nestjs'],
-        modules: ['@nestjs/core'],
-    },
-};
 const SERVICE_PATTERNS = [
     { name: 'PostgreSQL', patterns: ['postgres', 'postgresql', 'psql'] },
     { name: 'MySQL', patterns: ['mysqld', 'mysql.server', 'mariadb'] },
     { name: 'MongoDB', patterns: ['mongod', 'mongodb'] },
     { name: 'Redis', patterns: ['redis-server'] },
-    { name: 'Java', patterns: ['java', 'javaw', '.jar', 'spring-boot', 'tomcat'] },
-    { name: 'Python', patterns: ['python', 'flask', 'django', 'uvicorn', 'gunicorn'] },
-    { name: 'PHP', patterns: ['php', 'apache2', 'nginx', 'artisan', 'symfony'] },
+    { name: 'Spring Boot', patterns: ['spring-boot', 'spring.boot', 'springboot'] },
+    { name: 'Java', patterns: ['java', 'javaw', '.jar', 'tomcat'] },
+    { name: 'Laravel', patterns: ['artisan'] },
+    { name: 'Rails', patterns: ['rails server', 'rails s', 'puma', 'unicorn'] },
+    { name: 'Django', patterns: ['django', 'manage.py'] },
+    { name: 'FastAPI', patterns: ['uvicorn', 'fastapi'] },
+    { name: 'Flask', patterns: ['flask'] },
+    { name: 'Python', patterns: ['python', 'gunicorn'] },
+    { name: 'PHP', patterns: ['php', 'symfony'] },
+    { name: 'Nginx', patterns: ['nginx'] },
+    { name: 'Apache', patterns: ['apache2', 'httpd'] },
+    { name: 'Go', patterns: ['go run', 'go build'] },
+    { name: 'Ruby', patterns: ['ruby', 'bundle exec'] },
 ];
 async function identifyService(processName, pid, isWindows) {
     const cached = getCachedService(pid);
@@ -164,22 +233,27 @@ async function identifyService(processName, pid, isWindows) {
         const cmd = await getProcessCommand(pid, isWindows);
         const nameLower = processName.toLowerCase();
         if (cmd.includes('node') || nameLower.includes('node')) {
-            const nodeModules = await getNodeModules(pid, isWindows);
-            for (const [framework, patterns] of Object.entries(FRAMEWORK_PATTERNS)) {
-                const hasCmdPattern = patterns.cmd.some(p => cmd.includes(p));
-                const hasModule = patterns.modules.some(m => nodeModules.includes(m));
-                if (hasCmdPattern || hasModule) {
-                    const result = { framework, platform: 'Node.js' };
-                    setCachedService(pid, result);
-                    return result;
+            let framework;
+            try {
+                const cwd = await getWorkingDir(pid, isWindows);
+                if (cwd) {
+                    const pkgInfo = await readPkgInfo(cwd);
+                    framework = detectNodeFramework(cmd, pkgInfo.deps);
+                    debugLog('PID %s cwd=%s deps=%d framework=%s', pid, cwd, pkgInfo.deps.length, framework);
                 }
             }
-            const result = { platform: 'Node.js' };
+            catch (err) {
+                debugLog('readPkgInfo failed for PID %s: %o', pid, err);
+            }
+            if (!framework) {
+                framework = detectNodeFramework(cmd, []);
+            }
+            const result = { framework, platform: 'Node.js' };
             setCachedService(pid, result);
             return result;
         }
         for (const svc of SERVICE_PATTERNS) {
-            if (svc.patterns.some(p => cmd.includes(p) || processName.toLowerCase().includes(p))) {
+            if (svc.patterns.some(p => cmd.includes(p) || nameLower.includes(p))) {
                 const result = { platform: svc.name };
                 setCachedService(pid, result);
                 return result;
@@ -369,7 +443,6 @@ function getWebviewShell(nonce) {
       padding: 8px 10px;
       overflow-x: hidden;
     }
-    /* ── Header ── */
     .header {
       display: flex;
       align-items: center;
@@ -402,7 +475,6 @@ function getWebviewShell(nonce) {
     }
     .refresh-icon { display: inline-block; }
     .refresh-btn.loading .refresh-icon { animation: spin 0.7s linear infinite; }
-    /* ── Search ── */
     .search-wrap { margin-bottom: 6px; }
     .search-input {
       width: 100%;
@@ -419,7 +491,6 @@ function getWebviewShell(nonce) {
     .search-input::placeholder {
       color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground));
     }
-    /* ── Filter tabs ── */
     .filter-tabs {
       display: flex;
       margin-bottom: 8px;
@@ -442,9 +513,7 @@ function getWebviewShell(nonce) {
       color: var(--vscode-foreground);
       border-bottom-color: var(--vscode-focusBorder);
     }
-    /* ── Port list ── */
     #port-list { display: flex; flex-direction: column; gap: 4px; }
-    /* ── Row ── */
     .row {
       display: flex;
       align-items: center;
@@ -479,22 +548,49 @@ function getWebviewShell(nonce) {
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      max-width: 145px;
+      max-width: 150px;
       background: var(--vscode-badge-background);
       color: var(--vscode-badge-foreground);
       outline: 1px solid var(--vscode-contrastBorder, transparent);
     }
-    .s-angular    { background: #dd0031 !important; color: #fff !important; }
-    .s-react      { background: #20232a !important; color: #61dafb !important; }
-    .s-vue        { background: #42b883 !important; color: #fff !important; }
-    .s-node-js    { background: #68a063 !important; color: #fff !important; }
-    .s-postgresql { background: #336791 !important; color: #fff !important; }
-    .s-mysql      { background: #00758f !important; color: #fff !important; }
-    .s-mongodb    { background: #4db33d !important; color: #fff !important; }
-    .s-redis      { background: #d82c20 !important; color: #fff !important; }
-    .s-java       { background: #007396 !important; color: #fff !important; }
-    .s-python     { background: #3776ab !important; color: #fff !important; }
-    .s-php        { background: #777bb3 !important; color: #fff !important; }
+    /* ── Service brand colors ── */
+    .s-angular     { background: #dd0031 !important; color: #fff !important; }
+    .s-react       { background: #20232a !important; color: #61dafb !important; }
+    .s-next-js     { background: #000    !important; color: #fff !important; }
+    .s-vue         { background: #42b883 !important; color: #fff !important; }
+    .s-nuxt        { background: #00c16a !important; color: #fff !important; }
+    .s-sveltekit   { background: #ff3e00 !important; color: #fff !important; }
+    .s-svelte      { background: #ff3e00 !important; color: #fff !important; }
+    .s-remix       { background: #1d1d1d !important; color: #fff !important; }
+    .s-astro       { background: #ff5d01 !important; color: #fff !important; }
+    .s-node-js     { background: #68a063 !important; color: #fff !important; }
+    .s-nestjs      { background: #e0234e !important; color: #fff !important; }
+    .s-nx          { background: #002f56 !important; color: #fff !important; }
+    .s-express     { background: #303030 !important; color: #fff !important; }
+    .s-fastify     { background: #202020 !important; color: #fff !important; }
+    .s-koa         { background: #33333d !important; color: #fff !important; }
+    .s-hapi        { background: #eb6100 !important; color: #fff !important; }
+    .s-hono        { background: #e36002 !important; color: #fff !important; }
+    .s-elysia      { background: #8b5cf6 !important; color: #fff !important; }
+    .s-vite        { background: #646cff !important; color: #fff !important; }
+    .s-webpack     { background: #8dd6f9 !important; color: #000 !important; }
+    .s-postgresql  { background: #336791 !important; color: #fff !important; }
+    .s-mysql       { background: #00758f !important; color: #fff !important; }
+    .s-mongodb     { background: #4db33d !important; color: #fff !important; }
+    .s-redis       { background: #d82c20 !important; color: #fff !important; }
+    .s-spring-boot { background: #6db33f !important; color: #fff !important; }
+    .s-java        { background: #007396 !important; color: #fff !important; }
+    .s-laravel     { background: #ff2d20 !important; color: #fff !important; }
+    .s-rails       { background: #cc0000 !important; color: #fff !important; }
+    .s-django      { background: #0c3c26 !important; color: #44b78b !important; }
+    .s-fastapi     { background: #009688 !important; color: #fff !important; }
+    .s-flask       { background: #000    !important; color: #fff !important; }
+    .s-python      { background: #3776ab !important; color: #fff !important; }
+    .s-php         { background: #777bb3 !important; color: #fff !important; }
+    .s-go          { background: #00add8 !important; color: #fff !important; }
+    .s-nginx       { background: #009900 !important; color: #fff !important; }
+    .s-apache      { background: #d22128 !important; color: #fff !important; }
+    .s-ruby        { background: #cc342d !important; color: #fff !important; }
     /* ── Actions ── */
     .actions {
       display: flex;
@@ -530,7 +626,6 @@ function getWebviewShell(nonce) {
     .row:hover .fav-btn { opacity: 0.6; }
     .row:hover .fav-btn.active { opacity: 1; }
     .kill-btn:hover { color: var(--vscode-errorForeground, #f55); opacity: 1; }
-    /* ── States ── */
     .state-box {
       text-align: center;
       padding: 28px 16px;
@@ -552,7 +647,6 @@ function getWebviewShell(nonce) {
       cursor: pointer;
     }
     .retry-btn:hover { background: var(--vscode-button-hoverBackground); }
-    /* ── Loading overlay ── */
     #loading-overlay {
       position: fixed;
       inset: 0;
@@ -578,12 +672,12 @@ function getWebviewShell(nonce) {
   <div class="header">
     <span class="title">Active Ports</span>
     <button class="refresh-btn" id="refresh-btn">
-      <span class="refresh-icon">↻</span> Synchronize
+      <span class="refresh-icon">&#x21BB;</span> Synchronize
     </button>
   </div>
 
   <div class="search-wrap">
-    <input class="search-input" id="search-input" type="text" placeholder="Filter by port or service…">
+    <input class="search-input" id="search-input" type="text" placeholder="Filter by port or service&#x2026;">
   </div>
 
   <div class="filter-tabs">
@@ -619,15 +713,18 @@ function getWebviewShell(nonce) {
     var searchQuery = '';
     var hasLoaded = false;
 
-    var DB_NAMES   = ['postgresql', 'mysql', 'mongodb', 'redis', 'mariadb', 'cassandra', 'sqlite'];
-    var NODE_NAMES = ['node.js', 'angular', 'react', 'vue', 'next', 'vite', 'express', 'nestjs', 'nuxt', 'svelte', 'remix'];
-    var WEB_NAMES  = ['python', 'php', 'java', 'nginx', 'apache', 'spring', 'rails', 'django', 'flask', 'fastapi', 'ruby'];
+    var DB_NAMES   = ['postgresql','mysql','mongodb','redis','mariadb','cassandra','sqlite'];
+    var NODE_NAMES = ['node.js','angular','react','next.js','vue','nuxt','sveltekit','svelte',
+                      'remix','astro','nestjs','nx','express','fastify','koa','hapi','hono',
+                      'elysia','vite','webpack'];
+    var WEB_NAMES  = ['python','php','java','spring boot','nginx','apache','django',
+                      'fastapi','flask','laravel','rails','go','ruby'];
 
-    function getCategory(procName) {
-      var p = (procName || '').toLowerCase();
-      if (DB_NAMES.some(function(n) { return p.indexOf(n) !== -1; }))   return 'db';
-      if (NODE_NAMES.some(function(n) { return p.indexOf(n) !== -1; })) return 'node';
-      if (WEB_NAMES.some(function(n) { return p.indexOf(n) !== -1; }))  return 'web';
+    function getCategory(label) {
+      var p = (label || '').toLowerCase();
+      if (DB_NAMES.some(function(n)  { return p.indexOf(n) !== -1; })) { return 'db'; }
+      if (NODE_NAMES.some(function(n){ return p.indexOf(n) !== -1; })) { return 'node'; }
+      if (WEB_NAMES.some(function(n) { return p.indexOf(n) !== -1; })) { return 'web'; }
       return 'other';
     }
 
@@ -636,23 +733,23 @@ function getWebviewShell(nonce) {
     }
 
     function buildRowHtml(p) {
-      var isFav = favorites.indexOf(p.port) !== -1;
-      var svcDisplay = p.framework ? (p.framework + ' (' + p.process + ')') : p.process;
-      var svcClass = getServiceClass(p.process);
-      var pid = p.pid || '';
+      var isFav    = favorites.indexOf(p.port) !== -1;
+      var label    = p.framework || p.process;
+      var svcClass = getServiceClass(label);
+      var pid      = p.pid || '';
       var killHtml = pid
         ? '<button class="action-btn kill-btn" title="Stop process" data-action="kill">&#x2715;</button>'
         : '';
       return '<div class="row' + (isFav ? ' is-favorite' : '') + '"' +
                ' data-port="' + p.port + '"' +
                ' data-pid="' + pid + '"' +
-               ' data-proc="' + (p.process || '').toLowerCase() + '">' +
+               ' data-label="' + label.toLowerCase() + '">' +
                '<button class="action-btn fav-btn' + (isFav ? ' active' : '') + '"' +
                  ' title="' + (isFav ? 'Remove favorite' : 'Add to favorites') + '"' +
                  ' data-action="fav">&#x2605;</button>' +
                '<div class="port-info">' +
                  '<div class="port">' + p.port + '</div>' +
-                 '<div class="service ' + svcClass + '">' + svcDisplay + '</div>' +
+                 '<div class="service ' + svcClass + '">' + label + '</div>' +
                '</div>' +
                '<div class="actions">' +
                  '<button class="action-btn" title="Copy port" data-action="copyPort">&#x2398;</button>' +
@@ -668,24 +765,21 @@ function getWebviewShell(nonce) {
       var rows = document.querySelectorAll('#port-list .row');
       var visibleCount = 0;
       rows.forEach(function(row) {
-        var port = row.dataset.port || '';
-        var proc = row.dataset.proc || '';
-        var text = port + ' ' + proc;
+        var text = (row.dataset.port || '') + ' ' + (row.dataset.label || '');
         var matchSearch = !q || text.indexOf(q) !== -1;
-        var cat = getCategory(proc);
-        var matchCat = activeFilter === 'all' || cat === activeFilter;
+        var matchCat = activeFilter === 'all' || getCategory(row.dataset.label) === activeFilter;
         var show = matchSearch && matchCat;
         row.style.display = show ? '' : 'none';
         if (show) { visibleCount++; }
       });
-      var emptyEl = document.getElementById('empty-state');
-      emptyEl.classList.toggle('visible', hasLoaded && visibleCount === 0 && !document.getElementById('error-state').classList.contains('visible'));
+      var errVisible = document.getElementById('error-state').classList.contains('visible');
+      document.getElementById('empty-state').classList.toggle('visible',
+        hasLoaded && visibleCount === 0 && !errVisible);
     }
 
     function renderPorts() {
       var list = document.getElementById('port-list');
       var scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
-      // Sort: favorites first, then by port number
       var sorted = allPorts.slice().sort(function(a, b) {
         var aFav = favorites.indexOf(a.port) !== -1 ? 0 : 1;
         var bFav = favorites.indexOf(b.port) !== -1 ? 0 : 1;
@@ -698,22 +792,20 @@ function getWebviewShell(nonce) {
       applyFilter();
     }
 
-    // Event delegation
     document.getElementById('port-list').addEventListener('click', function(e) {
       var btn = e.target.closest('[data-action]');
       var row = e.target.closest('.row');
       if (!btn || !row) { return; }
-      var port = row.dataset.port;
-      var pid  = row.dataset.pid;
+      var port   = row.dataset.port;
+      var pid    = row.dataset.pid;
       var action = btn.dataset.action;
-      if (action === 'open')     { vscode.postMessage({ command: 'open', port: port }); }
-      if (action === 'copyUrl')  { vscode.postMessage({ command: 'copyUrl', port: port }); }
-      if (action === 'copyPort') { vscode.postMessage({ command: 'copyPort', port: port }); }
-      if (action === 'kill')     { vscode.postMessage({ command: 'killPort', port: port, pid: pid }); }
+      if (action === 'open')     { vscode.postMessage({ command: 'open',           port: port }); }
+      if (action === 'copyUrl')  { vscode.postMessage({ command: 'copyUrl',        port: port }); }
+      if (action === 'copyPort') { vscode.postMessage({ command: 'copyPort',       port: port }); }
+      if (action === 'kill')     { vscode.postMessage({ command: 'killPort',       port: port, pid: pid }); }
       if (action === 'fav')      { vscode.postMessage({ command: 'toggleFavorite', port: port }); }
     });
 
-    // Messages from extension host
     window.addEventListener('message', function(e) {
       var msg = e.data;
       if (msg.command === 'updatePorts') {
@@ -727,7 +819,7 @@ function getWebviewShell(nonce) {
           document.getElementById('port-list').innerHTML = '';
         } else {
           document.getElementById('error-state').classList.remove('visible');
-          allPorts = msg.ports || [];
+          allPorts  = msg.ports     || [];
           favorites = msg.favorites || [];
           renderPorts();
         }
@@ -745,13 +837,11 @@ function getWebviewShell(nonce) {
       }
     });
 
-    // Search
     document.getElementById('search-input').addEventListener('input', function(e) {
       searchQuery = e.target.value;
       applyFilter();
     });
 
-    // Quick filter tabs
     document.querySelectorAll('.filter-tab').forEach(function(tab) {
       tab.addEventListener('click', function() {
         activeFilter = tab.dataset.cat;
@@ -761,12 +851,9 @@ function getWebviewShell(nonce) {
       });
     });
 
-    // Refresh
     document.getElementById('refresh-btn').addEventListener('click', function() {
       vscode.postMessage({ command: 'refresh' });
     });
-
-    // Retry buttons
     document.getElementById('empty-retry').addEventListener('click', function() {
       vscode.postMessage({ command: 'refresh' });
     });
