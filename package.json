@@ -22,7 +22,7 @@
         {
           "id": "localhostPortsContainer",
           "title": "Localhost",
-          "icon": "icon.png"
+          "icon": "icon.svg"
         }
       ]
     },
@@ -35,6 +35,28 @@
           "type": "webview"
         }
       ]
+    },
+    "configuration": {
+      "title": "Localhost Ports Viewer",
+      "properties": {
+        "localhostPortsViewer.refreshInterval": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 1000,
+          "description": "Auto-refresh interval in milliseconds (minimum 1000ms)."
+        },
+        "localhostPortsViewer.commandTimeout": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 1000,
+          "description": "Timeout in milliseconds for each OS command used to detect ports."
+        },
+        "localhostPortsViewer.debugLogs": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable verbose debug logs in the Output channel."
+        }
+      }
     }
   },
   "repository": {

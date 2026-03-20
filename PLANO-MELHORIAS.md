@@ -34,19 +34,6 @@ Use estas regras sempre que a IA for aplicar melhorias no projeto:
 ## Objetivo
 Melhorar confiabilidade cross-OS (Windows/macOS/Linux), experiencia de uso no VS Code e conversao no Marketplace para aumentar downloads e retencao.
 
-## Prioridade - Top 10 de maior impacto
-
-- [ ] Top 1: Substituir `wmic` por PowerShell no Windows (`Get-NetTCPConnection` + `Get-Process`)
-- [ ] Top 2: Evitar refresh concorrente e adicionar timeout por comando
-- [ ] Top 3: Implementar cache por PID com TTL para reduzir custo de deteccao
-- [ ] Top 4: Usar `ss -lntp` no Linux com fallback para `lsof`
-- [ ] Top 5: Melhorar fallback para nao escanear range 1024-65535 completo
-- [ ] Top 6: Migrar UI para tokens de tema do VS Code (claro/escuro/alto contraste)
-- [ ] Top 7: Adicionar estados de loading, vazio e erro amigavel
-- [ ] Top 8: Adicionar acoes rapidas (copiar URL, copiar porta, abrir interno/externo)
-- [ ] Top 9: Corrigir metadata de Marketplace (`repository`, `keywords`, categoria, README, badge)
-- [ ] Top 10: Publicar GIF curto + screenshots reais + changelog por versao
-
 ### Regra de execucao sugerida
 - [ ] Sempre puxar primeiro itens do Top 10 antes das fases detalhadas
 - [ ] Ao concluir um Top item, marcar tambem os itens equivalentes nas fases abaixo
@@ -56,26 +43,26 @@ Melhorar confiabilidade cross-OS (Windows/macOS/Linux), experiencia de uso no VS
 ## Fase 1 - Base tecnica (Confiabilidade + Performance)
 
 ### 1. Coleta de portas por sistema operacional
-- [ ] Windows: substituir uso de `wmic` por PowerShell (`Get-NetTCPConnection` + `Get-Process`)
-- [ ] Linux: priorizar `ss -lntp` e manter fallback para `lsof`
-- [ ] macOS: padronizar parser de `lsof` para LISTEN
-- [ ] Criar adaptadores separados por OS (arquitetura por providers)
-- [ ] Adicionar timeout por comando para evitar travamentos
-- [ ] Adicionar fallback inteligente sem escanear range total imediatamente
+- [x] Windows: substituir uso de `wmic` por PowerShell (`Get-NetTCPConnection` + `Get-Process`)
+- [x] Linux: priorizar `ss -lntp` e manter fallback para `lsof`
+- [x] macOS: padronizar parser de `lsof` para LISTEN (`lsof -iTCP -sTCP:LISTEN -P -n`)
+- [x] Criar adaptadores separados por OS (arquitetura por providers)
+- [x] Adicionar timeout por comando para evitar travamentos
+- [x] Adicionar fallback inteligente sem escanear range total imediatamente
 
 ### 2. Performance de atualizacao
-- [ ] Evitar refresh concorrente (se ja estiver atualizando, ignorar novo ciclo)
-- [ ] Cache de identificacao por PID com TTL (10-20s)
+- [x] Evitar refresh concorrente (se ja estiver atualizando, ignorar novo ciclo)
+- [x] Cache de identificacao por PID com TTL (10-20s)
 - [ ] Limitar concorrencia da deteccao de servicos
 - [ ] Reduzir custo por refresh (nao reconstruir tudo sem necessidade)
-- [ ] Configuracao de intervalo de refresh no `settings.json`
+- [x] Configuracao de intervalo de refresh no `settings.json`
 
 ### 3. Robustez e seguranca
-- [ ] Validar porta antes de abrir URL
-- [ ] Escapar strings renderizadas no HTML (process/framework)
-- [ ] Adicionar Content Security Policy no webview
+- [x] Validar porta antes de abrir URL
+- [x] Escapar strings renderizadas no HTML (process/framework)
+- [x] Adicionar Content Security Policy no webview
 - [ ] Mensagens de erro claras (permissao, comando indisponivel, timeout)
-- [ ] Logs de debug opcionais via configuracao
+- [x] Logs de debug opcionais via configuracao
 
 ---
 
