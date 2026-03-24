@@ -53,9 +53,7 @@ Fully adapts to any theme: dark, light, high contrast. Uses VS Code CSS variable
 
 ## Preview
 
-<video src="preview.mov" controls width="600"></video>
-
-<img src="overview.png" alt="Localhost Ports Viewer screenshot" width="400" />
+[![Preview](https://img.youtube.com/vi/VIDEO_ID/maxresdefault.jpg)](h[ttps://www.youtube.com/watch?v=VIDEO_ID](https://www.youtube.com/watch?v=oiJWAf4dIko))
 
 > 💡 *Hover over any row to reveal the action buttons.*
 
