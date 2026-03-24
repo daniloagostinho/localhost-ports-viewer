@@ -3,6 +3,7 @@
 // VS Code extension: Localhost Ports Viewer
 
 import { exec } from 'child_process';
+import * as http from 'http';
 import { platform } from 'os';
 import tcpPortUsed from 'tcp-port-used';
 import { promisify } from 'util';
@@ -82,6 +83,70 @@ function getCachedService(pid: string): ServiceInfo | undefined {
 
 function setCachedService(pid: string, serviceInfo: ServiceInfo): void {
   pidCache.set(pid, { serviceInfo, expiresAt: Date.now() + PID_CACHE_TTL_MS });
+}
+
+// ─── HTTP framework fingerprinting ───────────────────────────────────────────
+
+// Ports that are never HTTP — skip probing them
+const NON_HTTP_PORTS = new Set(['5432', '3306', '27017', '6379', '5672', '6380', '6381', '11211']);
+
+const httpCache = new Map<string, { framework: string | undefined; expiresAt: number }>();
+
+function detectFrameworkFromHttp(poweredBy: string, body: string): string | undefined {
+  if (poweredBy.includes('next.js'))                                               { return 'Next.js'; }
+
+  if (body.includes('window.__NUXT__')   || body.includes('/__nuxt/'))            { return 'Nuxt'; }
+  if (body.includes('window.__remixContext'))                                      { return 'Remix'; }
+  if (body.includes('data-astro-cid')    || body.includes('/_astro/'))            { return 'Astro'; }
+  if (body.includes('/__sveltekit/')     || body.includes('/_app/immutable'))     { return 'SvelteKit'; }
+  if (body.includes('window.__NEXT_DATA__') || body.includes('__NEXT_DATA__'))    { return 'Next.js'; }
+  if (body.includes('ng-version')        || body.includes('<app-root'))           { return 'Angular'; }
+  if (body.includes('/@vite/client'))                                              { return 'Vite'; }
+  if (body.includes('/static/js/main.')  || body.includes('react-scripts'))       { return 'React'; }
+
+  return undefined;
+}
+
+async function probeHttpFramework(port: string): Promise<string | undefined> {
+  if (NON_HTTP_PORTS.has(port)) { return undefined; }
+
+  const cached = httpCache.get(port);
+  if (cached && Date.now() < cached.expiresAt) { return cached.framework; }
+
+  return new Promise<string | undefined>((resolve) => {
+    function done(framework: string | undefined) {
+      httpCache.set(port, { framework, expiresAt: Date.now() + PID_CACHE_TTL_MS });
+      resolve(framework);
+    }
+
+    const req = http.get(
+      { hostname: '127.0.0.1', port: parseInt(port, 10), path: '/', timeout: 600,
+        headers: { 'User-Agent': 'localhost-ports-viewer/probe' } },
+      (res) => {
+        const poweredBy = String(res.headers['x-powered-by'] ?? '').toLowerCase();
+
+        // Next.js identified by header alone — no need to read body
+        if (poweredBy.includes('next.js')) { res.destroy(); return done('Next.js'); }
+
+        // Collect first 8 KB of body
+        const chunks: Buffer[] = [];
+        let bytes = 0;
+        res.on('data', (chunk: Buffer) => {
+          chunks.push(chunk);
+          bytes += chunk.length;
+          if (bytes >= 8192) { res.destroy(); }
+        });
+        res.on('close', () => {
+          const body = Buffer.concat(chunks).toString('utf8', 0, Math.min(bytes, 8192));
+          done(detectFrameworkFromHttp(poweredBy, body));
+        });
+        res.on('error', () => done(undefined));
+      }
+    );
+
+    req.on('timeout', () => { req.destroy(); done(undefined); });
+    req.on('error',   () => done(undefined));
+  });
 }
 
 // ─── Process command getters ──────────────────────────────────────────────────
@@ -241,9 +306,11 @@ const SERVICE_PATTERNS: Array<{ name: string; patterns: string[] }> = [
   { name: 'Ruby',        patterns: ['ruby', 'bundle exec'] },
 ];
 
-async function identifyService(processName: string, pid: string, isWindows: boolean): Promise<ServiceInfo> {
+async function identifyService(processName: string, pid: string, port: string, isWindows: boolean): Promise<ServiceInfo> {
   const cached = getCachedService(pid);
   if (cached) { return cached; }
+
+  let result: ServiceInfo = { platform: processName };
 
   try {
     // rawCmd preserves original case — needed for filesystem path operations
@@ -269,25 +336,80 @@ async function identifyService(processName: string, pid: string, isWindows: bool
         }
       }
 
-      const result: ServiceInfo = { framework, platform: 'Node.js' };
-      setCachedService(pid, result);
-      return result;
-    }
-
-    for (const svc of SERVICE_PATTERNS) {
-      if (svc.patterns.some(p => cmd.includes(p) || nameLower.includes(p))) {
-        const result: ServiceInfo = { platform: svc.name };
-        setCachedService(pid, result);
-        return result;
+      result = { framework, platform: 'Node.js' };
+    } else {
+      // Pass 1: match by process name only — prevents cmd args (e.g. jdbc:postgresql)
+      // from misidentifying a Java/Spring Boot process as PostgreSQL.
+      for (const svc of SERVICE_PATTERNS) {
+        if (svc.patterns.some(p => nameLower.includes(p))) {
+          result = { platform: svc.name };
+          break;
+        }
+      }
+      // Pass 2: if no match by name, fall back to full command line
+      if (!result.framework && result.platform === processName) {
+        for (const svc of SERVICE_PATTERNS) {
+          if (svc.patterns.some(p => cmd.includes(p))) {
+            result = { platform: svc.name };
+            break;
+          }
+        }
       }
     }
   } catch (err) {
     debugLog('Error identifying service for PID %s: %o', pid, err);
   }
 
-  const result: ServiceInfo = { platform: processName };
+  // HTTP refinement: probe the port to confirm/correct framework detection.
+  // High-confidence HTTP signals (framework-specific markers) always win.
+  // Low-confidence signals (Vite, React/CRA) only apply when process detection
+  // didn't already find a specific frontend framework.
+  const HIGH_CONFIDENCE_HTTP = new Set(['Next.js', 'Nuxt', 'Remix', 'Astro', 'SvelteKit', 'Angular']);
+  const GENERIC_BUILD_TOOLS  = new Set(['Vite', 'Webpack']);
+
+  if (!NON_HTTP_PORTS.has(port)) {
+    try {
+      const httpFramework = await probeHttpFramework(port);
+      if (httpFramework) {
+        const processHasSpecificFramework =
+          result.framework !== undefined && !GENERIC_BUILD_TOOLS.has(result.framework);
+        const shouldOverride =
+          HIGH_CONFIDENCE_HTTP.has(httpFramework) || !processHasSpecificFramework;
+
+        if (shouldOverride) {
+          debugLog('Port %s HTTP probe → %s (was: %s)', port, httpFramework, result.framework ?? result.platform);
+          result = { ...result, framework: httpFramework };
+        } else {
+          debugLog('Port %s HTTP probe → %s ignored (process already found: %s)', port, httpFramework, result.framework);
+        }
+      }
+    } catch (err) {
+      debugLog('HTTP probe failed for port %s: %o', port, err);
+    }
+  }
+
   setCachedService(pid, result);
   return result;
+}
+
+// ─── System process filter ───────────────────────────────────────────────────
+
+// Raw process names (from lsof/ss/powershell) that are IDE internals or OS
+// services — not relevant to software development.
+const SYSTEM_PROCESS_BLOCKLIST = [
+  'code\\x20h', 'code helper', 'code - helper',  // VS Code Helper (macOS escapes space as \x20)
+  'electron', 'crashpad',
+  'webstorm', 'intellij', 'clion', 'goland', 'rider',
+  'xpcproxy', 'launchd', 'com.apple', 'coreaudio',
+  'controlce', 'airplay', 'rapportd', 'remoted',
+];
+
+function isSystemProcess(rawName: string): boolean {
+  const n = rawName.toLowerCase();
+  if (SYSTEM_PROCESS_BLOCKLIST.some(p => n.includes(p))) { return true; }
+  // lsof escapes spaces as \x20 — "Code Helper" → "Code\x20H…" (any VS Code helper variant)
+  if (/^code[^a-z0-9]/.test(n)) { return true; }
+  return false;
 }
 
 // ─── OS-specific port collectors ─────────────────────────────────────────────
@@ -311,9 +433,9 @@ async function collectPortsWindows(): Promise<PortInfo[]> {
     const parts = line.trim().split(/\s+/);
     if (parts.length < 2) { continue; }
     const [port, pid, procName = 'PORT IN USE'] = parts;
-    if (!portSet.has(port)) {
+    if (!portSet.has(port) && !isSystemProcess(procName)) {
       portSet.add(port);
-      const serviceInfo = await identifyService(procName, pid, true);
+      const serviceInfo = await identifyService(procName, pid, port, true);
       result.push({ port, pid, process: serviceInfo.platform, framework: serviceInfo.framework });
     }
   }
@@ -331,9 +453,10 @@ async function parseLsofLines(lines: string[], isWindows: boolean): Promise<Port
     if (!portMatch || parts.length < 2) { continue; }
     const port = portMatch[1];
     if (portSet.has(port)) { continue; }
+    if (isSystemProcess(parts[0])) { continue; }
     portSet.add(port);
     const pid = parts[1];
-    const serviceInfo = await identifyService(parts[0], pid, isWindows);
+    const serviceInfo = await identifyService(parts[0], pid, port, isWindows);
     result.push({ port, pid, process: serviceInfo.platform, framework: serviceInfo.framework });
   }
   return result;
@@ -362,8 +485,10 @@ async function parseSsLines(lines: string[]): Promise<PortInfo[]> {
     const pid       = pidMatch?.[1]  ?? '';
     const procName  = nameMatch?.[1] ?? 'PORT IN USE';
 
+    if (isSystemProcess(procName)) { continue; }
+
     if (pid) {
-      const serviceInfo = await identifyService(procName, pid, false);
+      const serviceInfo = await identifyService(procName, pid, port, false);
       result.push({ port, pid, process: serviceInfo.platform, framework: serviceInfo.framework });
     } else {
       result.push({ port, pid: '', process: procName });
@@ -736,6 +861,8 @@ function getWebviewShell(nonce: string): string {
   <script nonce="${nonce}">
     var vscode = acquireVsCodeApi();
     var allPorts = [];
+    // Signal extension that webview JS is ready — triggers initial port load
+    vscode.postMessage({ command: 'ready' });
     var favorites = [];
     var activeFilter = 'all';
     var searchQuery = '';
@@ -898,7 +1025,6 @@ function getWebviewShell(nonce: string): string {
 
 class LocalhostPortsWebviewProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
-  private _refreshInterval?: NodeJS.Timeout;
   private _isRefreshing = false;
   private _lastPorts: PortInfo[] = [];
 
@@ -909,10 +1035,6 @@ class LocalhostPortsWebviewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.options = { enableScripts: true };
     webviewView.webview.html = getWebviewShell(generateNonce());
 
-    this.startAutoRefresh();
-    await this.refreshPorts();
-
-    webviewView.onDidDispose(() => this.stopAutoRefresh());
     webviewView.webview.onDidReceiveMessage(msg => this.handleMessage(msg));
   }
 
@@ -986,22 +1108,10 @@ class LocalhostPortsWebviewProvider implements vscode.WebviewViewProvider {
         break;
       }
 
+      case 'ready':
       case 'refresh':
         await this.refreshPorts();
         break;
-    }
-  }
-
-  private startAutoRefresh() {
-    this.stopAutoRefresh();
-    const interval = getConfig().get<number>('refreshInterval', 5000);
-    this._refreshInterval = setInterval(() => this.refreshPorts(), interval);
-  }
-
-  private stopAutoRefresh() {
-    if (this._refreshInterval) {
-      clearInterval(this._refreshInterval);
-      this._refreshInterval = undefined;
     }
   }
 
