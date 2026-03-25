@@ -53,7 +53,7 @@ Fully adapts to any theme: dark, light, high contrast. Uses VS Code CSS variable
 
 ## Preview
 
-![Localhost Ports Viewer preview](Preview.png)
+![Localhost Ports Viewer preview](preview.gif)
 
 > 💡 *Hover over any row to reveal the action buttons.*
 
