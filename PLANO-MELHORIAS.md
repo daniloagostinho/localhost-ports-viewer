@@ -123,7 +123,7 @@ Melhorar confiabilidade cross-OS (Windows/macOS/Linux), experiencia de uso no VS
 
 ### 9. Ambientes de desenvolvimento
 - [ ] Validar comportamento em WSL
-- [ ] Validar comportamento em Dev Containers
+- [x] Validar comportamento em Dev Containers (detecta containers Docker via `docker ps`, mostra nome do container e imagem, categoria Docker no filtro)
 - [ ] Validar comportamento em SSH Remote
 - [ ] Documentar limitacoes e boas praticas para cada ambiente
 

@@ -284,6 +284,58 @@ function detectNodeFramework(cmd: string, deps: string[]): string | undefined {
   return undefined;
 }
 
+// ─── Docker container detection ─────────────────────────────────────────────
+
+interface DockerContainerInfo {
+  name: string;
+  image: string;
+}
+
+/** Cache of host-port → container info, refreshed each scan cycle. */
+let dockerPortMap: Map<string, DockerContainerInfo> = new Map();
+
+/** Returns true if the raw process name (possibly truncated by lsof) looks like Docker. */
+function isDockerProcess(rawName: string): boolean {
+  const n = rawName.toLowerCase();
+  return n.includes('com.docke') || n.includes('docker-proxy') || n.includes('docker') || n.includes('com.docker');
+}
+
+/**
+ * Queries `docker ps` to build a map of host-port → { name, image }.
+ * Called once per scan cycle; results are cached in `dockerPortMap`.
+ */
+async function refreshDockerPortMap(): Promise<void> {
+  dockerPortMap = new Map();
+  try {
+    // Format: ContainerName|ImageName|Ports
+    // Ports example: "0.0.0.0:5432->5432/tcp, 0.0.0.0:5433->5433/tcp"
+    const output = await execWithTimeout(
+      'docker ps --format "{{.Names}}|{{.Image}}|{{.Ports}}"', 3000
+    );
+    for (const line of output.split('\n')) {
+      if (!line.trim()) { continue; }
+      const [name, image, portsStr] = line.split('|');
+      if (!name || !portsStr) { continue; }
+      // Parse each port mapping: "0.0.0.0:5432->5432/tcp"
+      const portMappings = portsStr.match(/(?:\d+\.\d+\.\d+\.\d+|::):(\d+)->/g) || [];
+      for (const m of portMappings) {
+        const hostPort = m.match(/:(\d+)->/)?.[1];
+        if (hostPort) {
+          dockerPortMap.set(hostPort, { name, image });
+        }
+      }
+    }
+    debugLog('Docker port map: %d entries', dockerPortMap.size);
+  } catch (err) {
+    debugLog('Docker detection unavailable: %o', err);
+  }
+}
+
+/** Look up a Docker container by the host port it exposes. */
+function getDockerContainerForPort(port: string): DockerContainerInfo | undefined {
+  return dockerPortMap.get(port);
+}
+
 // ─── Service identification ───────────────────────────────────────────────────
 
 const SERVICE_PATTERNS: Array<{ name: string; patterns: string[] }> = [
@@ -311,6 +363,36 @@ async function identifyService(processName: string, pid: string, port: string, i
   if (cached) { return cached; }
 
   let result: ServiceInfo = { platform: processName };
+
+  // Docker container detection: if the process belongs to Docker, resolve via container info
+  if (isDockerProcess(processName)) {
+    const container = getDockerContainerForPort(port);
+    if (container) {
+      // Use image name as platform (e.g. "postgres:16-alpine") and container name as framework
+      const displayImage = container.image;
+      // Try to match container image against known service patterns for a friendly name
+      const imageLower = displayImage.toLowerCase();
+      let friendlyName: string | undefined;
+      for (const svc of SERVICE_PATTERNS) {
+        if (svc.patterns.some(p => imageLower.includes(p))) {
+          friendlyName = svc.name;
+          break;
+        }
+      }
+      // Show "🐳 image" — strip registry prefix and tag for a short label
+      const shortImage = displayImage.replace(/^[^/]*\//, '').replace(/:.*$/, '');
+      result = {
+        platform: friendlyName ?? displayImage,
+        framework: `🐳 ${shortImage}`,
+      };
+      setCachedService(pid + ':' + port, result);
+      return result;
+    }
+    // Docker process but can't resolve container — show generic Docker label
+    result = { platform: 'Docker' };
+    setCachedService(pid, result);
+    return result;
+  }
 
   try {
     // rawCmd preserves original case — needed for filesystem path operations
@@ -549,6 +631,9 @@ async function collectPortsFallback(): Promise<PortInfo[]> {
 async function getListeningPorts(): Promise<PortInfo[]> {
   const os = platform();
   let ports: PortInfo[] = [];
+
+  // Refresh Docker container→port mapping before collecting ports
+  await refreshDockerPortMap();
 
   try {
     if (os === 'win32') {
@@ -838,6 +923,7 @@ function getWebviewShell(nonce: string): string {
     <button class="filter-tab" data-cat="node">Node</button>
     <button class="filter-tab" data-cat="db">DB</button>
     <button class="filter-tab" data-cat="web">Web</button>
+    <button class="filter-tab" data-cat="docker">Docker</button>
     <button class="filter-tab" data-cat="other">Other</button>
   </div>
 
@@ -877,6 +963,7 @@ function getWebviewShell(nonce: string): string {
 
     function getCategory(label) {
       var p = (label || '').toLowerCase();
+      if (p.indexOf('🐳') !== -1 || p.indexOf('docker') !== -1) { return 'docker'; }
       if (DB_NAMES.some(function(n)  { return p.indexOf(n) !== -1; })) { return 'db'; }
       if (NODE_NAMES.some(function(n){ return p.indexOf(n) !== -1; })) { return 'node'; }
       if (WEB_NAMES.some(function(n) { return p.indexOf(n) !== -1; })) { return 'web'; }
