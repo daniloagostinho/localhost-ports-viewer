@@ -284,6 +284,29 @@ function detectNodeFramework(cmd: string, deps: string[]): string | undefined {
   return undefined;
 }
 
+// ─── Remote environment detection ───────────────────────────────────────────
+
+type RemoteEnv = 'local' | 'wsl' | 'devcontainer' | 'ssh' | 'codespace';
+
+function detectRemoteEnv(): RemoteEnv {
+  const remoteName = vscode.env.remoteName; // 'wsl', 'ssh-remote', 'dev-container', 'codespaces', undefined
+  if (!remoteName) { return 'local'; }
+  if (remoteName === 'wsl')            { return 'wsl'; }
+  if (remoteName === 'dev-container' || remoteName === 'attached-container') { return 'devcontainer'; }
+  if (remoteName === 'ssh-remote')     { return 'ssh'; }
+  if (remoteName === 'codespaces')     { return 'codespace'; }
+  debugLog('Unknown remoteName: %s', remoteName);
+  return 'local';
+}
+
+const ENV_LABELS: Record<RemoteEnv, { icon: string; label: string }> = {
+  local:        { icon: '💻', label: 'Local' },
+  wsl:          { icon: '🐧', label: 'WSL' },
+  devcontainer: { icon: '📦', label: 'Dev Container' },
+  ssh:          { icon: '🔑', label: 'SSH Remote' },
+  codespace:    { icon: '☁️', label: 'Codespace' },
+};
+
 // ─── Docker container detection ─────────────────────────────────────────────
 
 interface DockerContainerInfo {
@@ -309,9 +332,18 @@ async function refreshDockerPortMap(): Promise<void> {
   try {
     // Format: ContainerName|ImageName|Ports
     // Ports example: "0.0.0.0:5432->5432/tcp, 0.0.0.0:5433->5433/tcp"
-    const output = await execWithTimeout(
-      'docker ps --format "{{.Names}}|{{.Image}}|{{.Ports}}"', 3000
-    );
+    // In WSL, try `docker` first, then `docker.exe` (Docker Desktop WSL integration)
+    let output = '';
+    const cmd = 'docker ps --format "{{.Names}}|{{.Image}}|{{.Ports}}"';
+    try {
+      output = await execWithTimeout(cmd, 3000);
+    } catch {
+      if (detectRemoteEnv() === 'wsl') {
+        output = await execWithTimeout(cmd.replace('docker', 'docker.exe'), 3000);
+      } else {
+        throw new Error('docker not available');
+      }
+    }
     for (const line of output.split('\n')) {
       if (!line.trim()) { continue; }
       const [name, image, portsStr] = line.split('|');
@@ -694,6 +726,17 @@ function getWebviewShell(nonce: string): string {
       text-transform: uppercase;
       opacity: 0.7;
     }
+    .env-badge {
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 3px;
+      background: var(--vscode-badge-background, rgba(128,128,128,0.2));
+      color: var(--vscode-badge-foreground, var(--vscode-foreground));
+      white-space: nowrap;
+      margin-left: auto;
+      margin-right: 6px;
+    }
+    .env-badge:empty { display: none; }
     .refresh-btn {
       background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
       color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
@@ -909,6 +952,7 @@ function getWebviewShell(nonce: string): string {
 <body>
   <div class="header">
     <span class="title">Active Ports</span>
+    <span class="env-badge" id="env-badge"></span>
     <button class="refresh-btn" id="refresh-btn">
       <span class="refresh-icon">&#x21BB;</span> Synchronize
     </button>
@@ -1063,6 +1107,12 @@ function getWebviewShell(nonce: string): string {
           document.getElementById('error-state').classList.remove('visible');
           allPorts  = msg.ports     || [];
           favorites = msg.favorites || [];
+          var badge = document.getElementById('env-badge');
+          if (msg.env) {
+            badge.textContent = msg.env.icon + ' ' + msg.env.label;
+          } else {
+            badge.textContent = '';
+          }
           renderPorts();
         }
       } else if (msg.command === 'setLoading') {
@@ -1210,11 +1260,14 @@ class LocalhostPortsWebviewProvider implements vscode.WebviewViewProvider {
       const ports = await getListeningPorts();
       this._lastPorts = ports;
       if (this._view) {
+        const env = detectRemoteEnv();
+        const envInfo = env !== 'local' ? ENV_LABELS[env] : null;
         this._view.webview.postMessage({
           command: 'updatePorts',
           ports,
           favorites: this.getFavorites(),
           error: null,
+          env: envInfo,
         });
       }
     } catch (err) {

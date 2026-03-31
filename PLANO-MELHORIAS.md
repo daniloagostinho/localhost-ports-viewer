@@ -122,10 +122,10 @@ Melhorar confiabilidade cross-OS (Windows/macOS/Linux), experiencia de uso no VS
 - [x] Adicionar deteccao de: Remix, Svelte, Fastify, Hono, Elysia, Nginx, Apache
 
 ### 9. Ambientes de desenvolvimento
-- [ ] Validar comportamento em WSL
+- [x] Validar comportamento em WSL (detecta ambiente via `vscode.env.remoteName`, fallback `docker.exe` para Docker Desktop WSL integration, badge 🐧 WSL no header)
 - [x] Validar comportamento em Dev Containers (detecta containers Docker via `docker ps`, mostra nome do container e imagem, categoria Docker no filtro)
-- [ ] Validar comportamento em SSH Remote
-- [ ] Documentar limitacoes e boas praticas para cada ambiente
+- [x] Validar comportamento em SSH Remote (detecta ambiente via `vscode.env.remoteName`, badge 🔑 SSH Remote no header, comandos executam no host remoto)
+- [x] Documentar limitacoes e boas praticas para cada ambiente (seção "Supported Environments" no README)
 
 ---
 

@@ -76,6 +76,22 @@ Fully adapts to any theme: dark, light, high contrast. Uses VS Code CSS variable
 
 ---
 
+## 🖥️ Supported Environments
+
+The extension automatically detects your environment and displays a badge in the header.
+
+| Environment | Badge | How it works |
+|---|---|---|
+| **Local** | — | Full support. Uses native OS commands (`lsof`, `ss`, PowerShell) |
+| **WSL** | 🐧 WSL | Runs inside WSL as Linux. Docker Desktop integration supported via `docker.exe` fallback |
+| **Dev Containers** | 📦 Dev Container | Runs inside the container. Detects sibling containers via `docker ps` |
+| **SSH Remote** | 🔑 SSH Remote | Runs on the remote host. Shows ports listening on the remote machine |
+| **Codespaces** | ☁️ Codespace | Runs in the cloud environment. Works like Linux |
+
+> **Note:** In remote environments, "Open in browser" uses VS Code's automatic port forwarding to reach the service on your local machine.
+
+---
+
 ## 📸 Preview
 
 ![Localhost Ports Viewer preview](preview.gif)
