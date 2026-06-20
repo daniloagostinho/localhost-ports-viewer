@@ -1478,7 +1478,7 @@ async function showWhatsNew(context: vscode.ExtensionContext): Promise<void> {
 
   if (choice === 'See changelog') {
     vscode.env.openExternal(
-      vscode.Uri.parse('https://github.com/daniloagostinho/localhost-ports-viewer/blob/main/changelog.md')
+      vscode.Uri.parse('https://github.com/daniloagostinho/localhost-ports-viewer/blob/main/CHANGELOG.md')
     );
   }
 }

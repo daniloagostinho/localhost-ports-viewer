@@ -6,7 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [0.0.27] — 2026-06-19
+## [0.0.28] — 2026-06-19
 
 ### Fixed
 - **Truncated process names** (e.g. a process showing as `app_inkwe`) — names are now resolved in full via `ps-list`, working around `lsof`'s 9-character `COMMAND` limit. Faithful service names across macOS, Linux and Windows.
@@ -15,6 +15,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Less noise** — unidentified processes on ephemeral ports (≥ 49152, e.g. random macOS/GUI background apps) are hidden; only recognized dev services on those ports are shown.
 - **Docker port cache** keyed by `pid:port` instead of `pid`, so a single Docker proxy serving multiple containers no longer mislabels ports.
 - Webview now HTML-escapes process and image names before rendering.
+- "See changelog" link in the update popup now points to `CHANGELOG.md` (was a 404).
 
 ### Changed
 - Windows command line read via `Get-CimInstance Win32_Process` (works on Windows PowerShell 5.1).

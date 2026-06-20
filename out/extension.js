@@ -1465,7 +1465,7 @@ async function showWhatsNew(context) {
         : `See the full changelog on GitHub.`;
     const choice = await vscode.window.showInformationMessage(`Localhost Ports Viewer updated to v${current}`, { detail: summary, modal: false }, 'See changelog', 'Dismiss');
     if (choice === 'See changelog') {
-        vscode.env.openExternal(vscode.Uri.parse('https://github.com/daniloagostinho/localhost-ports-viewer/blob/main/changelog.md'));
+        vscode.env.openExternal(vscode.Uri.parse('https://github.com/daniloagostinho/localhost-ports-viewer/blob/main/CHANGELOG.md'));
     }
 }
 export function activate(context) {
