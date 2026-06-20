@@ -2,8 +2,11 @@
 // Licensed under the MIT License. See LICENSE in the project root.
 // VS Code extension: Localhost Ports Viewer
 import { exec } from 'child_process';
+import { readFile } from 'fs/promises';
 import * as http from 'http';
 import { platform } from 'os';
+import * as path from 'path';
+import psList from 'ps-list';
 import tcpPortUsed from 'tcp-port-used';
 import { promisify } from 'util';
 import * as vscode from 'vscode';
@@ -126,7 +129,9 @@ async function probeHttpFramework(port) {
 // getRawCommand preserves original case (needed for path extraction)
 async function getRawCommandWindows(pid) {
     try {
-        const ps = `powershell -NoProfile -Command "Get-Process -Id ${pid} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty CommandLine"`;
+        // Get-Process exposes CommandLine only in PowerShell 7+; Win32_Process works
+        // on the bundled Windows PowerShell 5.1 too.
+        const ps = `powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').CommandLine"`;
         const out = await execWithTimeout(ps);
         if (out.trim()) {
             return out.trim();
@@ -184,7 +189,7 @@ function getWorkingDir(pid, isWindows) {
 }
 async function readPkgInfo(cwd) {
     try {
-        const raw = await execWithTimeout(`cat "${cwd}/package.json"`);
+        const raw = await readFile(path.join(cwd, 'package.json'), 'utf8');
         const pkg = JSON.parse(raw);
         return {
             deps: [
@@ -342,6 +347,9 @@ const ENV_LABELS = {
 };
 /** Cache of host-port → container info, refreshed each scan cycle. */
 let dockerPortMap = new Map();
+/** Negative cache: when Docker is absent, skip `docker ps` until this time. */
+let dockerUnavailableUntil = 0;
+const DOCKER_RETRY_MS = 60_000;
 /** Returns true if the raw process name (possibly truncated by lsof) looks like Docker. */
 function isDockerProcess(rawName) {
     const n = rawName.toLowerCase();
@@ -353,6 +361,11 @@ function isDockerProcess(rawName) {
  */
 async function refreshDockerPortMap() {
     dockerPortMap = new Map();
+    // Skip entirely if Docker was recently found to be unavailable — avoids
+    // spawning `docker ps` (and a timeout) on every refresh for non-Docker users.
+    if (Date.now() < dockerUnavailableUntil) {
+        return;
+    }
     try {
         // Format: ContainerName|ImageName|Ports
         // Ports example: "0.0.0.0:5432->5432/tcp, 0.0.0.0:5433->5433/tcp"
@@ -390,12 +403,36 @@ async function refreshDockerPortMap() {
         debugLog('Docker port map: %d entries', dockerPortMap.size);
     }
     catch (err) {
+        dockerUnavailableUntil = Date.now() + DOCKER_RETRY_MS;
         debugLog('Docker detection unavailable: %o', err);
     }
 }
 /** Look up a Docker container by the host port it exposes. */
 function getDockerContainerForPort(port) {
     return dockerPortMap.get(port);
+}
+/**
+ * Cache of pid → { full process name, full command line }, refreshed each scan.
+ *
+ * Why: `lsof` truncates the COMMAND column to 9 characters (e.g. a process named
+ * "app_inkwell" shows up as "app_inkwe"), and `ss` truncates to ~15. `ps-list`
+ * derives the name from `ps -o comm` (full basename) and the command from
+ * `ps -o args` (full), so resolving by PID gives faithful names cross-OS.
+ * Not supported for `cmd` on Windows — falls back to getRawCommand there.
+ */
+let processMap = new Map();
+async function refreshProcessMap() {
+    processMap = new Map();
+    try {
+        const procs = await psList();
+        for (const p of procs) {
+            processMap.set(String(p.pid), { name: p.name ?? '', cmd: p.cmd ?? '' });
+        }
+        debugLog('Process map: %d entries', processMap.size);
+    }
+    catch (err) {
+        debugLog('ps-list unavailable: %o', err);
+    }
 }
 // ─── Service identification ───────────────────────────────────────────────────
 const SERVICE_PATTERNS = [
@@ -418,13 +455,20 @@ const SERVICE_PATTERNS = [
     { name: 'Ruby', patterns: ['ruby', 'bundle exec'] },
 ];
 async function identifyService(processName, pid, port, isWindows) {
-    const cached = getCachedService(pid);
+    // Key by pid+port: a single Docker proxy pid serves many ports, each mapping
+    // to a different container, so caching by pid alone would be wrong.
+    const cacheKey = `${pid}:${port}`;
+    const cached = getCachedService(cacheKey);
     if (cached) {
         return cached;
     }
-    let result = { platform: processName };
+    // Resolve the full process name/command from ps-list (fixes lsof's 9-char
+    // truncation). Falls back to the collector-supplied name when unavailable.
+    const psInfo = processMap.get(pid);
+    const resolvedName = psInfo?.name?.trim() || processName;
+    let result = { platform: resolvedName };
     // Docker container detection: if the process belongs to Docker, resolve via container info
-    if (isDockerProcess(processName)) {
+    if (isDockerProcess(resolvedName)) {
         const container = getDockerContainerForPort(port);
         if (container) {
             // Use image name as platform (e.g. "postgres:16-alpine") and container name as framework
@@ -443,20 +487,23 @@ async function identifyService(processName, pid, port, isWindows) {
             result = {
                 platform: friendlyName ?? displayImage,
                 framework: `🐳 ${shortImage}`,
+                recognized: true,
             };
-            setCachedService(pid + ':' + port, result);
+            setCachedService(cacheKey, result);
             return result;
         }
         // Docker process but can't resolve container — show generic Docker label
-        result = { platform: 'Docker' };
-        setCachedService(pid, result);
+        result = { platform: 'Docker', recognized: true };
+        setCachedService(cacheKey, result);
         return result;
     }
     try {
-        // rawCmd preserves original case — needed for filesystem path operations
-        const rawCmd = await getRawCommand(pid, isWindows);
+        // rawCmd preserves original case — needed for filesystem path operations.
+        // Prefer ps-list's full command (no exec, no truncation); fall back to a
+        // direct query (Windows has no cmd via ps-list).
+        const rawCmd = psInfo?.cmd?.trim() || await getRawCommand(pid, isWindows);
         const cmd = rawCmd.toLowerCase(); // lowercased for pattern matching only
-        const nameLower = processName.toLowerCase();
+        const nameLower = resolvedName.toLowerCase();
         if (cmd.includes('node') || nameLower.includes('node')) {
             // 1st pass: cmd-only detection (zero I/O)
             let framework = detectNodeFramework(cmd, []);
@@ -486,7 +533,7 @@ async function identifyService(processName, pid, port, isWindows) {
                 }
             }
             // Pass 2: if no match by name, fall back to full command line
-            if (!result.framework && result.platform === processName) {
+            if (!result.framework && result.platform === resolvedName) {
                 for (const svc of SERVICE_PATTERNS) {
                     if (svc.patterns.some(p => cmd.includes(p))) {
                         result = { platform: svc.name };
@@ -524,7 +571,10 @@ async function identifyService(processName, pid, port, isWindows) {
             debugLog('HTTP probe failed for port %s: %o', port, err);
         }
     }
-    setCachedService(pid, result);
+    // Recognized = we mapped it to a real framework/service, not just echoed the
+    // raw process name. Used to drop random GUI/OS noise on ephemeral ports.
+    result.recognized = result.framework !== undefined || result.platform !== resolvedName;
+    setCachedService(cacheKey, result);
     return result;
 }
 // ─── System process filter ───────────────────────────────────────────────────
@@ -548,6 +598,44 @@ function isSystemProcess(rawName) {
     }
     return false;
 }
+/** Max simultaneous identifyService calls (each may exec + HTTP-probe). */
+const SERVICE_CONCURRENCY = 8;
+/**
+ * IANA dynamic/ephemeral port range. Dev servers pick stable lower ports
+ * (3000, 5173, 8080…); listeners up here are usually OS-assigned by random
+ * GUI/background apps (e.g. macOS "app_inkwell"), which are not dev-relevant.
+ */
+const EPHEMERAL_PORT_MIN = 49152;
+/** Run `fn` over `items` with a bounded number of workers, preserving order. */
+async function mapWithConcurrency(items, limit, fn) {
+    const results = new Array(items.length);
+    let next = 0;
+    async function worker() {
+        while (next < items.length) {
+            const idx = next++;
+            results[idx] = await fn(items[idx]);
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+    return results;
+}
+/** Identify services for deduped candidates with bounded concurrency. */
+async function resolveCandidates(candidates) {
+    const resolved = await mapWithConcurrency(candidates, SERVICE_CONCURRENCY, async (c) => {
+        if (!c.pid) {
+            return { port: c.port, pid: '', process: c.procName, recognized: false };
+        }
+        const info = await identifyService(c.procName, c.pid, c.port, c.isWindows);
+        return {
+            port: c.port, pid: c.pid, process: info.platform,
+            framework: info.framework, recognized: info.recognized === true,
+        };
+    });
+    // Hide unidentified processes sitting on ephemeral ports — random GUI/OS noise.
+    return resolved
+        .filter(r => r.recognized || parseInt(r.port, 10) < EPHEMERAL_PORT_MIN)
+        .map(({ recognized, ...port }) => port);
+}
 // ─── OS-specific port collectors ─────────────────────────────────────────────
 async function collectPortsWindows() {
     debugLog('Collecting ports via PowerShell (Windows)');
@@ -560,7 +648,7 @@ async function collectPortsWindows() {
         '}',
     ].join(' ');
     const output = await execWithTimeout(`powershell -NoProfile -Command "${ps}"`, 10_000);
-    const result = [];
+    const candidates = [];
     const portSet = new Set();
     for (const line of output.split('\n')) {
         const parts = line.trim().split(/\s+/);
@@ -570,14 +658,13 @@ async function collectPortsWindows() {
         const [port, pid, procName = 'PORT IN USE'] = parts;
         if (!portSet.has(port) && !isSystemProcess(procName)) {
             portSet.add(port);
-            const serviceInfo = await identifyService(procName, pid, port, true);
-            result.push({ port, pid, process: serviceInfo.platform, framework: serviceInfo.framework });
+            candidates.push({ port, pid, procName, isWindows: true });
         }
     }
-    return result;
+    return resolveCandidates(candidates);
 }
 async function parseLsofLines(lines, isWindows) {
-    const result = [];
+    const candidates = [];
     const portSet = new Set();
     for (const line of lines) {
         if (!line.trim()) {
@@ -596,11 +683,9 @@ async function parseLsofLines(lines, isWindows) {
             continue;
         }
         portSet.add(port);
-        const pid = parts[1];
-        const serviceInfo = await identifyService(parts[0], pid, port, isWindows);
-        result.push({ port, pid, process: serviceInfo.platform, framework: serviceInfo.framework });
+        candidates.push({ port, pid: parts[1], procName: parts[0], isWindows });
     }
-    return result;
+    return resolveCandidates(candidates);
 }
 async function collectPortsMacOS() {
     debugLog('Collecting ports via lsof (macOS)');
@@ -608,7 +693,7 @@ async function collectPortsMacOS() {
     return parseLsofLines(output.split('\n'), false);
 }
 async function parseSsLines(lines) {
-    const result = [];
+    const candidates = [];
     const portSet = new Set();
     for (const line of lines) {
         if (!line.includes('LISTEN')) {
@@ -630,15 +715,9 @@ async function parseSsLines(lines) {
         if (isSystemProcess(procName)) {
             continue;
         }
-        if (pid) {
-            const serviceInfo = await identifyService(procName, pid, port, false);
-            result.push({ port, pid, process: serviceInfo.platform, framework: serviceInfo.framework });
-        }
-        else {
-            result.push({ port, pid: '', process: procName });
-        }
+        candidates.push({ port, pid, procName, isWindows: false });
     }
-    return result;
+    return resolveCandidates(candidates);
 }
 async function collectPortsLinux() {
     try {
@@ -687,8 +766,9 @@ async function collectPortsFallback() {
 async function getListeningPorts() {
     const os = platform();
     let ports = [];
-    // Refresh Docker container→port mapping before collecting ports
-    await refreshDockerPortMap();
+    // Refresh process names and Docker container→port mapping before collecting
+    // ports — both feed identifyService.
+    await Promise.all([refreshProcessMap(), refreshDockerPortMap()]);
     try {
         if (os === 'win32') {
             ports = await collectPortsWindows();
@@ -1037,6 +1117,14 @@ function getWebviewShell(nonce) {
       return 's-' + (name || '').toLowerCase().replace(/[^a-z0-9]/g, '-');
     }
 
+    // Escape any process/framework text before it enters the DOM. Process names
+    // and Docker image names come from the OS and are not trusted.
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
     function buildRowHtml(p) {
       var isFav    = favorites.indexOf(p.port) !== -1;
       var label    = p.framework || p.process;
@@ -1046,15 +1134,15 @@ function getWebviewShell(nonce) {
         ? '<button class="action-btn kill-btn" title="Stop process" data-action="kill">&#x2715;</button>'
         : '';
       return '<div class="row' + (isFav ? ' is-favorite' : '') + '"' +
-               ' data-port="' + p.port + '"' +
-               ' data-pid="' + pid + '"' +
-               ' data-label="' + label.toLowerCase() + '">' +
+               ' data-port="' + esc(p.port) + '"' +
+               ' data-pid="' + esc(pid) + '"' +
+               ' data-label="' + esc(String(label).toLowerCase()) + '">' +
                '<button class="action-btn fav-btn' + (isFav ? ' active' : '') + '"' +
                  ' title="' + (isFav ? 'Remove favorite' : 'Add to favorites') + '"' +
                  ' data-action="fav">&#x2605;</button>' +
                '<div class="port-info">' +
-                 '<div class="port">' + p.port + '</div>' +
-                 '<div class="service ' + svcClass + '">' + label + '</div>' +
+                 '<div class="port">' + esc(p.port) + '</div>' +
+                 '<div class="service ' + svcClass + '">' + esc(label) + '</div>' +
                '</div>' +
                '<div class="actions">' +
                  '<button class="action-btn" title="Copy port" data-action="copyPort">&#x2398;</button>' +
@@ -1182,6 +1270,7 @@ class LocalhostPortsWebviewProvider {
     _view;
     _isRefreshing = false;
     _lastPorts = [];
+    _timer;
     constructor(_context) {
         this._context = _context;
     }
@@ -1190,6 +1279,41 @@ class LocalhostPortsWebviewProvider {
         webviewView.webview.options = { enableScripts: true };
         webviewView.webview.html = getWebviewShell(generateNonce());
         webviewView.webview.onDidReceiveMessage(msg => this.handleMessage(msg));
+        // Auto-refresh only while the view is visible — no polling in the background.
+        if (webviewView.visible) {
+            this.startAutoRefresh();
+        }
+        webviewView.onDidChangeVisibility(() => {
+            if (webviewView.visible) {
+                this.refreshPorts(true);
+                this.startAutoRefresh();
+            }
+            else {
+                this.stopAutoRefresh();
+            }
+        });
+        webviewView.onDidDispose(() => this.stopAutoRefresh());
+        // Restart the timer when the user changes the configured interval.
+        this._context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+            if (e.affectsConfiguration('localhostPortsViewer.refreshInterval') && this._view?.visible) {
+                this.startAutoRefresh();
+            }
+        }));
+    }
+    startAutoRefresh() {
+        this.stopAutoRefresh();
+        const interval = Math.max(1000, getConfig().get('refreshInterval', 5000));
+        this._timer = setInterval(() => {
+            if (this._view?.visible) {
+                this.refreshPorts(true);
+            }
+        }, interval);
+    }
+    stopAutoRefresh() {
+        if (this._timer) {
+            clearInterval(this._timer);
+            this._timer = undefined;
+        }
     }
     getFavorites() {
         return this._context.globalState.get('favorites', []);
@@ -1269,12 +1393,16 @@ class LocalhostPortsWebviewProvider {
                 break;
         }
     }
-    async refreshPorts() {
+    async refreshPorts(silent = false) {
         if (this._isRefreshing || !this._view) {
             return;
         }
         this._isRefreshing = true;
-        this._view.webview.postMessage({ command: 'setLoading', loading: true });
+        // Only show the spinner on explicit/initial loads. Background auto-refreshes
+        // update the list silently so the panel doesn't flash every few seconds.
+        if (!silent) {
+            this._view.webview.postMessage({ command: 'setLoading', loading: true });
+        }
         try {
             const ports = await getListeningPorts();
             this._lastPorts = ports;

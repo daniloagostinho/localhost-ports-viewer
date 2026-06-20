@@ -4,7 +4,7 @@
   "publisher": "danilodevsilva",
   "description": "Monitor all localhost ports in real time. Detects Node, React, Next.js, databases and more — open, copy or kill any service directly from the VS Code sidebar.",
   "type": "module",
-  "version": "0.0.26",
+  "version": "0.0.27",
   "engines": {
     "vscode": "^1.100.0"
   },
@@ -69,7 +69,10 @@
         },
         "localhostPortsViewer.openBrowserTarget": {
           "type": "string",
-          "enum": ["external", "internal"],
+          "enum": [
+            "external",
+            "internal"
+          ],
           "enumDescriptions": [
             "Open in the system default browser",
             "Open in VS Code's Simple Browser"
@@ -102,6 +105,7 @@
     "@typescript-eslint/parser": "^8.31.1",
     "@vscode/test-cli": "^0.0.10",
     "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.9.2",
     "eslint": "^9.25.1",
     "typescript": "^5.8.3"
   },

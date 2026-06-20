@@ -9,3 +9,9 @@ vsc-extension-quickstart.md
 **/*.map
 **/*.ts
 **/.vscode-test.*
+out/test/**
+PLANO-MELHORIAS.md
+preview.mov
+Preview.png
+overview.png
+*.vsix

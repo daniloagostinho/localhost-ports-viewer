@@ -6,6 +6,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.0.27] — 2026-06-19
+
+### Fixed
+- **Truncated process names** (e.g. a process showing as `app_inkwe`) — names are now resolved in full via `ps-list`, working around `lsof`'s 9-character `COMMAND` limit. Faithful service names across macOS, Linux and Windows.
+- **Auto-refresh now works** — the `refreshInterval` setting actually drives a timer; previously it had no effect. Refresh runs only while the panel is visible and restarts when the interval changes.
+- **Background refresh is silent** — the loading spinner no longer flashes on every auto-refresh; it only appears on the initial load and on manual refresh.
+- **Less noise** — unidentified processes on ephemeral ports (≥ 49152, e.g. random macOS/GUI background apps) are hidden; only recognized dev services on those ports are shown.
+- **Docker port cache** keyed by `pid:port` instead of `pid`, so a single Docker proxy serving multiple containers no longer mislabels ports.
+- Webview now HTML-escapes process and image names before rendering.
+
+### Changed
+- Windows command line read via `Get-CimInstance Win32_Process` (works on Windows PowerShell 5.1).
+- `package.json` read with `fs.readFile` instead of spawning a shell.
+- Service identification runs with bounded concurrency for faster refreshes.
+- `docker ps` is skipped for 60s after a failure, avoiding repeated timeouts when Docker isn't installed.
+
+---
+
 ## [0.0.20] — 2026-03-20
 
 ### Changed
