@@ -137,12 +137,39 @@ Melhorar confiabilidade cross-OS (Windows/macOS/Linux), experiencia de uso no VS
 
 ---
 
+## Bugs identificados (2026-06-19 - analise completa)
+
+Prioridade alta:
+- [x] **Nomes truncados (causa do "APP_INKWE")** — `lsof` corta a coluna COMMAND em 9 chars
+      (`app_inkwell` -> `app_inkwe`); `ss` corta em ~15. Resolvido usando `ps-list`
+      (ja era dependencia, nao estava sendo usada) para resolver nome/cmd completos por PID.
+- [x] **`refreshInterval` era config morta** — nao existia nenhum `setInterval`; a config
+      "Auto-refresh interval" nao fazia nada. Implementado auto-refresh real, ativo apenas
+      quando a view esta visivel, reiniciando ao mudar o intervalo.
+
+Pendentes (encontrados, ainda nao corrigidos):
+- [x] Cache de PID nunca acertava no caminho Docker — agora chaveado por `pid:port`
+      em leitura e escrita (um proxy Docker serve varias portas/containers)
+- [x] HTML do webview nao escapava `label`/`data-label` — adicionado `esc()` no webview
+- [x] `cat "${cwd}/package.json"` via shell — trocado por `fs.readFile` + `path.join`
+- [x] Windows: `Get-Process` nao expoe `CommandLine` no PS 5.1 — agora `Get-CimInstance Win32_Process`
+- [x] Deteccao de servicos sequencial — `mapWithConcurrency` (limite 8), preserva ordem
+- [x] `docker ps` rodando todo refresh sem Docker — negative cache de 60s (`dockerUnavailableUntil`)
+- [ ] `extractProjectDirFromCmd` so casa caminhos Unix, nunca `C:\`
+- [ ] Infra de teste quebrada: `out/test/extension.test.js` e CJS sob pacote `type: module`
+      e nao ha `src/test/*.ts` para recompilar
+
 ## Diario de progresso
 
-### Dia 1
-- [ ] Itens concluidos:
-- [ ] Bloqueios:
-- [ ] Proximo passo:
+### Dia 1 (2026-06-19)
+- [x] Itens concluidos: fix dos nomes truncados via ps-list (validado ao vivo: porta 49193
+      app_inkwe -> app_inkwell) + auto-refresh real respeitando visibilidade da view
+- [x] Tambem: escape de HTML no webview + chave do cache Docker corrigida (pid:port)
+- [x] Robustez: fs.readFile, Windows CommandLine via CIM, concorrencia limitada,
+      docker ps com negative cache de 60s
+- [ ] Bloqueios: `npm test` falha por infra pre-existente (nao relacionada)
+- [ ] Proximo passo: suportar caminhos Windows em extractProjectDirFromCmd;
+      consertar infra de teste (criar src/test/*.ts ESM)
 
 ### Dia 2
 - [ ] Itens concluidos:
