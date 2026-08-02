@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.0.30] — 2026-08-02
+
+### Fixed
+- Generic Node.js listeners that only expose internal JSON/health endpoints are no longer displayed as development services.
+- Angular CLI servers launched through npm scripts are detected even when the process title is reported as `ng s (project-name)` instead of `node`.
+
+---
+
 ## [0.0.29] — 2026-08-02
 
 ### Fixed

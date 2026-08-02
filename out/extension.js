@@ -514,7 +514,12 @@ async function identifyService(processName, pid, port, isWindows) {
         const rawCmd = psInfo?.cmd?.trim() || await getRawCommand(pid, isWindows);
         const cmd = rawCmd.toLowerCase(); // lowercased for pattern matching only
         const nameLower = resolvedName.toLowerCase();
-        if (cmd.includes('node') || nameLower.includes('node')) {
+        const collectorNameLower = processName.toLowerCase();
+        // ps-list can report the npm script title instead of the executable name
+        // (for example "ng s (project-name)"), while lsof correctly reports
+        // "node". Preserve that collector evidence so Node project dependency
+        // detection still runs for Angular CLI and similar npm-launched servers.
+        if (cmd.includes('node') || nameLower.includes('node') || collectorNameLower.includes('node')) {
             // 1st pass: cmd-only detection (zero I/O)
             let framework = detectNodeFramework(cmd, []);
             if (!framework) {

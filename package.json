@@ -4,7 +4,7 @@
   "publisher": "danilodevsilva",
   "description": "Monitor relevant local development services in real time. Detects Node, React, Next.js, databases and more — without OS and desktop-app noise.",
   "type": "module",
-  "version": "0.0.29",
+  "version": "0.0.30",
   "engines": {
     "vscode": "^1.100.0"
   },
