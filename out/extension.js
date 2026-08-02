@@ -84,26 +84,32 @@ function detectFrameworkFromHttp(poweredBy, body) {
     }
     return undefined;
 }
-async function probeHttpFramework(port) {
+async function probeHttpService(port) {
     if (NON_HTTP_PORTS.has(port)) {
-        return undefined;
+        return { hasWebInterface: false };
     }
     const cached = httpCache.get(port);
     if (cached && Date.now() < cached.expiresAt) {
-        return cached.framework;
+        return cached.result;
     }
     return new Promise((resolve) => {
-        function done(framework) {
-            httpCache.set(port, { framework, expiresAt: Date.now() + PID_CACHE_TTL_MS });
-            resolve(framework);
+        let settled = false;
+        function done(result) {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            httpCache.set(port, { result, expiresAt: Date.now() + PID_CACHE_TTL_MS });
+            resolve(result);
         }
         const req = http.get({ hostname: '127.0.0.1', port: parseInt(port, 10), path: '/', timeout: 600,
             headers: { 'User-Agent': 'localhost-ports-viewer/probe' } }, (res) => {
             const poweredBy = String(res.headers['x-powered-by'] ?? '').toLowerCase();
+            const contentType = String(res.headers['content-type'] ?? '').toLowerCase();
             // Next.js identified by header alone — no need to read body
             if (poweredBy.includes('next.js')) {
                 res.destroy();
-                return done('Next.js');
+                return done({ framework: 'Next.js', hasWebInterface: true });
             }
             // Collect first 8 KB of body
             const chunks = [];
@@ -117,12 +123,16 @@ async function probeHttpFramework(port) {
             });
             res.on('close', () => {
                 const body = Buffer.concat(chunks).toString('utf8', 0, Math.min(bytes, 8192));
-                done(detectFrameworkFromHttp(poweredBy, body));
+                const framework = detectFrameworkFromHttp(poweredBy, body);
+                // Content-Type is the strongest signal. The body fallback covers small
+                // dev servers that omit the header while avoiding JSON/RPC agents.
+                const hasWebInterface = contentType.includes('text/html') || /<!doctype\s+html|<html[\s>]/i.test(body);
+                done({ framework, hasWebInterface });
             });
-            res.on('error', () => done(undefined));
+            res.on('error', () => done({ hasWebInterface: false }));
         });
-        req.on('timeout', () => { req.destroy(); done(undefined); });
-        req.on('error', () => done(undefined));
+        req.on('timeout', () => { req.destroy(); done({ hasWebInterface: false }); });
+        req.on('error', () => done({ hasWebInterface: false }));
     });
 }
 // ─── Process command getters ──────────────────────────────────────────────────
@@ -521,7 +531,7 @@ async function identifyService(processName, pid, port, isWindows) {
                     debugLog('readPkgInfo failed for PID %s: %o', pid, err);
                 }
             }
-            result = { framework, platform: 'Node.js' };
+            result = { framework, platform: 'Node.js', genericNode: framework === undefined };
         }
         else {
             // Pass 1: match by process name only — prevents cmd args (e.g. jdbc:postgresql)
@@ -554,7 +564,9 @@ async function identifyService(processName, pid, port, isWindows) {
     const GENERIC_BUILD_TOOLS = new Set(['Vite', 'Webpack']);
     if (!NON_HTTP_PORTS.has(port)) {
         try {
-            const httpFramework = await probeHttpFramework(port);
+            const httpProbe = await probeHttpService(port);
+            result.hasWebInterface = httpProbe.hasWebInterface;
+            const httpFramework = httpProbe.framework;
             if (httpFramework) {
                 const processHasSpecificFramework = result.framework !== undefined && !GENERIC_BUILD_TOOLS.has(result.framework);
                 const shouldOverride = HIGH_CONFIDENCE_HTTP.has(httpFramework) || !processHasSpecificFramework;
@@ -571,9 +583,12 @@ async function identifyService(processName, pid, port, isWindows) {
             debugLog('HTTP probe failed for port %s: %o', port, err);
         }
     }
-    // Recognized = we mapped it to a real framework/service, not just echoed the
-    // raw process name. Used to drop random GUI/OS noise on ephemeral ports.
-    result.recognized = result.framework !== undefined || result.platform !== resolvedName;
+    // Merely renaming a `node` process to "Node.js" is not positive evidence of
+    // a development service. AI/IDE helpers frequently run internal Node agents
+    // on several ports and expose JSON health endpoints. A generic Node listener
+    // is therefore only retained later when it exposes an actual HTML interface.
+    result.recognized = result.framework !== undefined ||
+        (result.platform !== resolvedName && result.genericNode !== true);
     setCachedService(cacheKey, result);
     return result;
 }
@@ -600,12 +615,6 @@ function isSystemProcess(rawName) {
 }
 /** Max simultaneous identifyService calls (each may exec + HTTP-probe). */
 const SERVICE_CONCURRENCY = 8;
-/**
- * IANA dynamic/ephemeral port range. Dev servers pick stable lower ports
- * (3000, 5173, 8080…); listeners up here are usually OS-assigned by random
- * GUI/background apps (e.g. macOS "app_inkwell"), which are not dev-relevant.
- */
-const EPHEMERAL_PORT_MIN = 49152;
 /** Run `fn` over `items` with a bounded number of workers, preserving order. */
 async function mapWithConcurrency(items, limit, fn) {
     const results = new Array(items.length);
@@ -623,18 +632,22 @@ async function mapWithConcurrency(items, limit, fn) {
 async function resolveCandidates(candidates) {
     const resolved = await mapWithConcurrency(candidates, SERVICE_CONCURRENCY, async (c) => {
         if (!c.pid) {
-            return { port: c.port, pid: '', process: c.procName, recognized: false };
+            return { port: c.port, pid: '', process: c.procName, visible: false };
         }
         const info = await identifyService(c.procName, c.pid, c.port, c.isWindows);
         return {
             port: c.port, pid: c.pid, process: info.platform,
-            framework: info.framework, recognized: info.recognized === true,
+            framework: info.framework,
+            visible: info.recognized === true || info.hasWebInterface === true,
         };
     });
-    // Hide unidentified processes sitting on ephemeral ports — random GUI/OS noise.
+    // Require positive development evidence. Port number alone is not evidence:
+    // GUI helpers, browser debugging sockets and AI desktop agents frequently use
+    // low/stable ports too. Known dev services remain visible even without HTML
+    // (databases/APIs); unknown services must expose an actual HTML interface.
     return resolved
-        .filter(r => r.recognized || parseInt(r.port, 10) < EPHEMERAL_PORT_MIN)
-        .map(({ recognized, ...port }) => port);
+        .filter(r => r.visible)
+        .map(({ visible, ...port }) => port);
 }
 // ─── OS-specific port collectors ─────────────────────────────────────────────
 async function collectPortsWindows() {
@@ -755,7 +768,23 @@ async function collectPortsFallback() {
                 tcpPortUsed.check(port, '::1'),
             ]);
             if (v4 || v6) {
-                results.push({ port: port.toString(), pid: '', process: info.platform, framework: info.framework });
+                const portString = port.toString();
+                // Database protocols have no browser UI, but are explicitly known
+                // development services. Every other fallback candidate must prove it
+                // is a browser-facing HTTP service instead of merely owning a socket.
+                if (NON_HTTP_PORTS.has(portString)) {
+                    results.push({ port: portString, pid: '', process: info.platform, framework: info.framework });
+                    return;
+                }
+                const httpProbe = await probeHttpService(portString);
+                if (httpProbe.hasWebInterface || httpProbe.framework) {
+                    results.push({
+                        port: portString,
+                        pid: '',
+                        process: info.platform,
+                        framework: httpProbe.framework ?? info.framework,
+                    });
+                }
             }
         }
         catch { }

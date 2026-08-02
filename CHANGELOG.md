@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.0.29] — 2026-08-02
+
+### Fixed
+- **Development-only port filtering** — unknown listeners are no longer shown merely because they use a low port number.
+- Desktop application agents, internal debugging sockets, and generic Node.js background processes are hidden unless they expose a real HTML interface or match a known development service.
+- The common-port fallback now validates browser-facing HTTP services before displaying them; known database protocols remain supported.
+
+---
+
 ## [0.0.28] — 2026-06-19
 
 ### Fixed

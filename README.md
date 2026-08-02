@@ -5,7 +5,7 @@
 [![VS Code](https://img.shields.io/badge/VS%20Code-1.100+-blue?logo=visualstudiocode)](https://code.visualstudio.com/)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)](https://marketplace.visualstudio.com/items?itemName=danilodevsilva.localhost-ports-viewer)
 
-> **See every service running on your machine — without leaving VS Code.**
+> **See the development services running on your machine — without leaving VS Code.**
 > Open, copy, or kill any localhost port directly from the sidebar.
 
 ---
@@ -22,7 +22,7 @@ No more `lsof -i | grep LISTEN`. No more forgotten ports.
 
 ### 📡 Real-time port monitoring
 
-All TCP ports currently listening on your machine, updated automatically. No manual refresh needed.
+Relevant development services currently listening on your machine, updated automatically. The extension hides unrelated OS sockets, desktop-app agents, browser debugging endpoints, and other background listeners.
 
 ### 🔍 Automatic framework & service detection
 
@@ -119,13 +119,14 @@ The extension uses OS-level commands to list listening TCP ports:
 - **Linux**: `ss -lntp` (fallback: `lsof`)
 - **Windows**: PowerShell `Get-NetTCPConnection`
 
-For each port, it applies a multi-layer identification strategy:
+For each port, it applies a multi-layer identification strategy and only displays it when there is positive development evidence:
 
 1. **Process name matching** — checks the process name against known service patterns
 2. **Command line analysis** — reads the full command for deeper framework clues
 3. **`package.json` detection** — for Node processes, reads project dependencies to identify React, Next.js, Vue, etc.
 4. **🐳 Docker container resolution** — queries `docker ps` to map container ports to image names
 5. **HTTP fingerprinting** — probes HTTP ports to detect frameworks from response headers and HTML content
+6. **Visibility validation** — keeps known development services (including databases and containers) or ports that return a real HTML document; an unknown listening socket is hidden
 
 Results are cached per-PID (15s TTL) to keep refreshes fast.
 
